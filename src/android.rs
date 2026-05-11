@@ -210,7 +210,7 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getAv
         .iter()
         .map(|s| {
             format!(
-                r#"{{"manufacturer":"{}","name":"{}","iso":{}}}"#,
+                r#"{{"manufacturer":"{}","name":"{}","iso":{}}}}"#,
                 s.manufacturer, s.name, s.iso as u32
             )
         })
@@ -245,10 +245,11 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getDe
 /// DNG files are TIFF-based.  We read the following tags to normalise the
 /// Bayer sensor data before demosaicing:
 ///
-///   - Tag 33422 / 0x828D — CFAPattern (2×2 Bayer mosaic, default RGGB)
-///   - Tag 50714 / 0xC5BA — BlackLevel (per-channel; scalar fallback = 0)
-///   - Tag 50717 / 0xC5BD — WhiteLevel (scalar; default 65535 for 16-bit)
-///   - BitsPerSample         — used to scale U8 data to 16-bit range
+///   - Tag 0x0103 / 259    — Compression (must be 1 = uncompressed)
+///   - Tag 33422 / 0x828D  — CFAPattern (2×2 Bayer mosaic, default RGGB)
+///   - Tag 50714 / 0xC5BA  — BlackLevel (per-channel; scalar fallback = 0)
+///   - Tag 50717 / 0xC5BD  — WhiteLevel (scalar; default 65535 for 16-bit)
+///   - BitsPerSample        — used to scale U8 data to 16-bit range
 ///
 /// The demosaic is a simple bilinear interpolation (Malvar-class quality is
 /// not required here because filmr will substantially remap the tones anyway).
@@ -275,12 +276,41 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
 
     let (width, height) = decoder.dimensions().map_err(|e| format!("TIFF dimensions error: {e}"))?;
 
+    // --- Compression check ---
+    // DngCreator.writeImage always produces uncompressed (type 1) strips.
+    // Some third-party DNG files use JPEG (6), lossless-JPEG (7), or deflate (8/32946).
+    // Attempting to read those as raw Bayer produces garbage; bail out clearly instead.
+    let compression = decoder
+        .find_tag(Tag::Compression)
+        .ok()
+        .flatten()
+        .and_then(|v| v.into_u32().ok())
+        .unwrap_or(1); // 1 = no compression (TIFF/DNG default)
+
+    match compression {
+        1 => { /* uncompressed — continue */ }
+        6 => return Err(
+            "Compressed DNG (JPEG compression) not supported. \
+             Use uncompressed RAW capture or pre-process with a DNG SDK.".into()
+        ),
+        7 => return Err(
+            "Compressed DNG (lossless JPEG compression) not supported.".into()
+        ),
+        32946 | 8 => return Err(
+            "Compressed DNG (deflate compression) not supported.".into()
+        ),
+        other => return Err(format!("Unknown DNG compression type {other}; cannot decode.")),
+    }
+
     // --- BitsPerSample ---
+    // BitsPerSample may be stored as a scalar or as an array (one entry per channel,
+    // e.g. [16, 16, 16] for a 3-channel 16-bit image). Use into_u32_vec() to handle
+    // both cases and take the first channel value.
     let bits_per_sample: u32 = decoder
         .find_tag(Tag::BitsPerSample)
         .ok()
         .flatten()
-        .and_then(|v| v.into_u32().ok())
+        .and_then(|v| v.into_u32_vec().ok().and_then(|vec| vec.into_iter().next()))
         .unwrap_or(16);
 
     // --- CFAPattern (2×2: R=0, G=1, B=2) ---
@@ -337,7 +367,7 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
 
     if samples.len() < w * h {
         return Err(format!(
-            "RAW data too short: got {} samples, expected {}×{}={}",
+            "RAW data too short: got {} samples, expected ××={}",
             samples.len(), w, h, w * h
         ));
     }
