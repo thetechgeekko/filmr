@@ -226,7 +226,7 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getAv
 pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getDefaultConfig<
     'local,
 >(
-    mut env: JNIEnv<'local>,
+    env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) -> jstring {
     let config = SimulationConfig::default();
@@ -234,6 +234,267 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getDe
     env.new_string(json)
         .map(|s| s.into_raw())
         .unwrap_or(std::ptr::null_mut())
+}
+
+// ---------------------------------------------------------------------------
+// DNG / RAW processing
+// ---------------------------------------------------------------------------
+
+/// Decode raw DNG bytes to a linear RGB image using the TIFF decoder.
+///
+/// DNG files are TIFF-based.  We read the following tags to normalise the
+/// Bayer sensor data before demosaicing:
+///
+///   - Tag 33422 / 0x828D — CFAPattern (2×2 Bayer mosaic, default RGGB)
+///   - Tag 50714 / 0xC5BA — BlackLevel (per-channel; scalar fallback = 0)
+///   - Tag 50717 / 0xC5BD — WhiteLevel (scalar; default 65535 for 16-bit)
+///   - BitsPerSample         — used to scale U8 data to 16-bit range
+///
+/// The demosaic is a simple bilinear interpolation (Malvar-class quality is
+/// not required here because filmr will substantially remap the tones anyway).
+///
+/// Return protocol:
+///   - First 4 bytes: image width  as little-endian i32
+///   - Next  4 bytes: image height as little-endian i32
+///   - Remaining bytes: width×height×3 linear-8-bit RGB (R G B R G B …)
+#[cfg(feature = "android")]
+fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
+    use std::io::Cursor;
+    use tiff::decoder::{Decoder, DecodingResult};
+    use tiff::tags::Tag;
+
+    // DNG-specific tag numbers (not in the tiff crate's built-in Tag enum)
+    const TAG_CFA_PATTERN: u16 = 0x828D; // 33422
+    // DNG spec tag numbers
+    const TAG_BLACK_LEVEL_CORRECT: u16 = 0xC61A; // 50714
+
+    const TAG_WHITE_LEVEL: u16 = 0xC61D; // 50717
+
+    let cursor = Cursor::new(dng);
+    let mut decoder = Decoder::new(cursor).map_err(|e| format!("TIFF decode error: {e}"))?;
+
+    let (width, height) = decoder.dimensions().map_err(|e| format!("TIFF dimensions error: {e}"))?;
+
+    // --- BitsPerSample ---
+    let bits_per_sample: u32 = decoder
+        .find_tag(Tag::BitsPerSample)
+        .ok()
+        .flatten()
+        .and_then(|v| v.into_u32().ok())
+        .unwrap_or(16);
+
+    // --- CFAPattern (2×2: R=0, G=1, B=2) ---
+    // Default = RGGB
+    let cfa: [u8; 4] = decoder
+        .find_tag(Tag::Unknown(TAG_CFA_PATTERN))
+        .ok()
+        .flatten()
+        .and_then(|v| v.into_u8_vec().ok())
+        .and_then(|v| if v.len() >= 4 { Some([v[0], v[1], v[2], v[3]]) } else { None })
+        .unwrap_or([0, 1, 1, 2]); // RGGB
+
+    // --- BlackLevel (try correct tag, fall back to 0) ---
+    let black_level: f32 = decoder
+        .find_tag(Tag::Unknown(TAG_BLACK_LEVEL_CORRECT))
+        .ok()
+        .flatten()
+        .and_then(|v| {
+            // may be rational, u16, u32, or f32
+            v.into_f32().ok().or_else(|| None)
+        })
+        .unwrap_or(0.0_f32);
+
+    // --- WhiteLevel ---
+    let white_level: f32 = decoder
+        .find_tag(Tag::Unknown(TAG_WHITE_LEVEL))
+        .ok()
+        .flatten()
+        .and_then(|v| v.into_f32().ok())
+        .unwrap_or_else(|| ((1u32 << bits_per_sample) - 1) as f32);
+
+    let scale = white_level - black_level;
+    if scale <= 0.0 {
+        return Err(format!(
+            "Invalid DNG levels: black={black_level} white={white_level}"
+        ));
+    }
+
+    // --- Read RAW Bayer data ---
+    let raw_data = decoder.read_image().map_err(|e| format!("TIFF read error: {e}"))?;
+
+    // Normalise every sample to [0.0, 1.0]
+    let samples: Vec<f32> = match raw_data {
+        DecodingResult::U8(v) => v.iter().map(|&x| (x as f32 - black_level) / scale).collect(),
+        DecodingResult::U16(v) => v.iter().map(|&x| (x as f32 - black_level) / scale).collect(),
+        DecodingResult::U32(v) => v.iter().map(|&x| (x as f32 - black_level) / scale).collect(),
+        DecodingResult::I16(v) => v.iter().map(|&x| (x as f32 - black_level) / scale).collect(),
+        DecodingResult::F32(v) => v.iter().map(|&x| (x - black_level) / scale).collect(),
+        _ => return Err("Unsupported DNG sample format".to_string()),
+    };
+
+    let w = width as usize;
+    let h = height as usize;
+
+    if samples.len() < w * h {
+        return Err(format!(
+            "RAW data too short: got {} samples, expected {}×{}={}",
+            samples.len(), w, h, w * h
+        ));
+    }
+
+    // --- Bilinear Bayer demosaic ---
+    // cfa[row%2 * 2 + col%2] → 0=R, 1=G, 2=B
+    let mut rgb = vec![0f32; w * h * 3];
+
+    // Helper: safe pixel fetch with border clamping
+    let bayer = |row: isize, col: isize| -> f32 {
+        let r = row.clamp(0, h as isize - 1) as usize;
+        let c = col.clamp(0, w as isize - 1) as usize;
+        samples[r * w + c]
+    };
+
+    for row in 0..h {
+        for col in 0..w {
+            let channel = cfa[(row % 2) * 2 + (col % 2)] as usize; // 0=R,1=G,2=B
+            let r = row as isize;
+            let c = col as isize;
+
+            let (out_r, out_g, out_b) = match channel {
+                0 => {
+                    // At R pixel: R known, interpolate G and B
+                    let r_val = bayer(r, c);
+                    let g_val = (bayer(r-1,c) + bayer(r+1,c) + bayer(r,c-1) + bayer(r,c+1)) / 4.0;
+                    let b_val = (bayer(r-1,c-1) + bayer(r-1,c+1) + bayer(r+1,c-1) + bayer(r+1,c+1)) / 4.0;
+                    (r_val, g_val, b_val)
+                }
+                1 => {
+                    // At G pixel: G known, interpolate R and B from neighbours
+                    let g_val = bayer(r, c);
+                    // Determine if G is on an R-row or B-row
+                    let r_row = cfa[(row % 2) * 2] == 0; // first col in this row is R?
+                    if r_row {
+                        // G on R-row: R left/right, B above/below
+                        let r_val = (bayer(r, c-1) + bayer(r, c+1)) / 2.0;
+                        let b_val = (bayer(r-1, c) + bayer(r+1, c)) / 2.0;
+                        (r_val, g_val, b_val)
+                    } else {
+                        // G on B-row: R above/below, B left/right
+                        let r_val = (bayer(r-1, c) + bayer(r+1, c)) / 2.0;
+                        let b_val = (bayer(r, c-1) + bayer(r, c+1)) / 2.0;
+                        (r_val, g_val, b_val)
+                    }
+                }
+                2 => {
+                    // At B pixel: B known, interpolate G and R
+                    let b_val = bayer(r, c);
+                    let g_val = (bayer(r-1,c) + bayer(r+1,c) + bayer(r,c-1) + bayer(r,c+1)) / 4.0;
+                    let r_val = (bayer(r-1,c-1) + bayer(r-1,c+1) + bayer(r+1,c-1) + bayer(r+1,c+1)) / 4.0;
+                    (r_val, g_val, b_val)
+                }
+                _ => (bayer(r, c), bayer(r, c), bayer(r, c)),
+            };
+
+            let base = (row * w + col) * 3;
+            rgb[base]     = out_r.clamp(0.0, 1.0);
+            rgb[base + 1] = out_g.clamp(0.0, 1.0);
+            rgb[base + 2] = out_b.clamp(0.0, 1.0);
+        }
+    }
+
+    // Convert to u8
+    let rgb_u8: Vec<u8> = rgb.iter().map(|&v| (v * 255.0 + 0.5) as u8).collect();
+
+    // Pack result: [width: i32 LE][height: i32 LE][RGB bytes...]
+    let mut out = Vec::with_capacity(8 + rgb_u8.len());
+    out.extend_from_slice(&(width as i32).to_le_bytes());
+    out.extend_from_slice(&(height as i32).to_le_bytes());
+    out.extend_from_slice(&rgb_u8);
+
+    Ok(out)
+}
+
+/// Process a raw DNG file through the filmr engine.
+///
+/// The DNG is decoded (demosaiced) to linear RGB, then the filmr film
+/// simulation is applied.
+///
+/// Parameters (from Kotlin):
+/// - `dng_bytes`   : raw DNG file bytes
+/// - `preset_key`  : preset identifier string (e.g. "KODAK_PORTRA_400")
+/// - `style_key`   : style identifier string  (e.g. "ACCURATE", "ARTISTIC")
+/// - `config_json` : JSON-encoded `SimulationConfig`
+///
+/// Returns a `ByteArray` where:
+///   - Bytes 0–3: image width  as little-endian signed 32-bit integer
+///   - Bytes 4–7: image height as little-endian signed 32-bit integer
+///   - Bytes 8… : width×height×3 processed RGB bytes (R G B R G B …)
+///
+/// Throws `java.lang.RuntimeException` on any failure.
+#[no_mangle]
+pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_processRawDng<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    dng_bytes: JByteArray<'local>,
+    preset_key: JString<'local>,
+    style_key: JString<'local>,
+    config_json: JString<'local>,
+) -> jbyteArray {
+    match process_raw_dng_impl(&mut env, &dng_bytes, &preset_key, &style_key, &config_json) {
+        Ok(arr) => arr,
+        Err(e) => {
+            let _ = env.throw_new("java/lang/RuntimeException", e.as_str());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[cfg(feature = "android")]
+fn process_raw_dng_impl<'local>(
+    env: &mut JNIEnv<'local>,
+    dng_bytes: &JByteArray<'local>,
+    preset_key: &JString<'local>,
+    style_key: &JString<'local>,
+    config_json: &JString<'local>,
+) -> Result<jbyteArray, String> {
+    let preset_key: String = env.get_string(preset_key).map_err(|e| e.to_string())?.into();
+    let style_key: String = env.get_string(style_key).map_err(|e| e.to_string())?.into();
+    let config_json: String = env.get_string(config_json).map_err(|e| e.to_string())?.into();
+
+    let dng = env.convert_byte_array(dng_bytes).map_err(|e| e.to_string())?;
+
+    // Decode DNG → demosaiced linear RGB (with dimension header)
+    let decoded = decode_dng_to_rgb(&dng)?;
+
+    // Extract dimensions from the header we prepended
+    if decoded.len() < 8 {
+        return Err("DNG decode returned too-short buffer".to_string());
+    }
+    let width  = i32::from_le_bytes(decoded[0..4].try_into().unwrap()) as u32;
+    let height = i32::from_le_bytes(decoded[4..8].try_into().unwrap()) as u32;
+    let rgb_bytes = &decoded[8..];
+
+    // Build RgbImage for the filmr pipeline
+    let input: image::RgbImage =
+        ImageBuffer::from_raw(width, height, rgb_bytes.to_vec())
+            .ok_or_else(|| "Failed to build RgbImage from demosaiced data".to_string())?;
+
+    let film = stock_by_key(&preset_key).with_style(style_from_str(&style_key));
+    let config: SimulationConfig = serde_json::from_str(&config_json).unwrap_or_default();
+
+    let output = process_image(&input, &film, &config);
+    let output_rgb = output.into_raw(); // width×height×3
+
+    // Re-pack with dimension header so Kotlin knows the size
+    let mut result = Vec::with_capacity(8 + output_rgb.len());
+    result.extend_from_slice(&(width as i32).to_le_bytes());
+    result.extend_from_slice(&(height as i32).to_le_bytes());
+    result.extend_from_slice(&output_rgb);
+
+    env.byte_array_from_slice(&result)
+        .map(|arr| arr.into_raw())
+        .map_err(|e| e.to_string())
 }
 
 /// Returns 1 (true) if the library was compiled with the `depth` feature
