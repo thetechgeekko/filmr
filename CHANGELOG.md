@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-05-11
+
+### ✨ Features
+
+- **UI Redesign (Phase 8)**: Dark professional theme inspired by Lightroom/Capture One
+  - Three-column layout: left film list, center preview, right adjustment panel
+  - Adjust / Effects / Detail tab system with Simple/Professional mode switch
+  - Custom labeled_slider component (label+value top row, full-width slider below)
+  - egui_taffy integration for CSS flexbox layout (centered controls, equal-width tabs)
+  - Accent-colored Develop button, borderless toolbar buttons
+  - Film stock list with 32x24px thumbnails, brand grouping, accent highlight
+  - Style selector with accent-colored selected state
+  - WB mode buttons with accent styling
+  - Status bar showing current Style · Film Stock
+
+### 🐛 Bug Fixes
+
+- Fix trackpad two-finger pan on macOS (handle smooth_scroll_delta)
+- Persist 'Don't ask again' for model download prompt
+
 ## [0.10.1] - 2026-04-28
 
 ### ✨ Features
