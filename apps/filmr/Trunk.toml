@@ -1,7 +1,7 @@
 [build]
 filehash = false
 # Exclude depth for WASM (ureq/ring doesn't support wasm32)
-cargo_features = ["cli", "ui", "compute-gpu"]
+features = ["cli", "ui", "compute-gpu"]
 no_default_features = true
 
 [[hooks]]
