@@ -69,6 +69,7 @@ fn stock_by_key(key: &str) -> FilmStock {
         "POLAROID_I_TYPE_COLOR" => polaroid::POLAROID_I_TYPE_COLOR(),
         "POLAROID_BW_667" => polaroid::POLAROID_BW_667(),
         "POLAROID_SPECTRA_COLOR" => polaroid::POLAROID_SPECTRA_COLOR(),
+        "POLAROID_100_COLOR" => polaroid::POLAROID_100_COLOR(),
         "POLAROID_55_BW" => polaroid::POLAROID_55_BW(),
         // Other / Cinestill
         "CINESTILL_800T" => other::CINESTILL_800T(),
