@@ -1,3 +1,5 @@
+#[cfg(feature = "android")]
+pub mod android;
 pub mod cie_data;
 pub mod depth;
 pub mod film;
