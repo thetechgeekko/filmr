@@ -235,3 +235,131 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getDe
         .map(|s| s.into_raw())
         .unwrap_or(std::ptr::null_mut())
 }
+
+/// Returns 1 (true) if the library was compiled with the `depth` feature
+/// (Depth Anything V2 monocular depth estimation).
+#[no_mangle]
+pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_isDepthSupported<
+    'local,
+>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jni::sys::jboolean {
+    #[cfg(feature = "depth")]
+    { 1u8 }
+    #[cfg(not(feature = "depth"))]
+    { 0u8 }
+}
+
+/// Process an image with depth-guided DOF and object-motion effects.
+///
+/// Parameters match `processImage` with one addition:
+/// - `model_path`: absolute path to `depth_anything_v2_vits.rten` on the device.
+///   Pass an empty string to skip depth estimation (falls back to uniform depth).
+///
+/// Depth estimation only runs when:
+///   1. The library was compiled with `--features depth`, AND
+///   2. `model_path` is non-empty and the file exists, AND
+///   3. `config_json` has `dof_amount > 0` or `object_motion_amount > 0`.
+///
+/// On any depth-estimation error the function falls back to depth-less processing
+/// rather than failing.
+#[no_mangle]
+pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_processImageWithDepth<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    rgba_bytes: JByteArray<'local>,
+    width: jint,
+    height: jint,
+    preset_key: JString<'local>,
+    style_key: JString<'local>,
+    config_json: JString<'local>,
+    model_path: JString<'local>,
+) -> jbyteArray {
+    match process_with_depth_impl(
+        &mut env,
+        &rgba_bytes,
+        width,
+        height,
+        &preset_key,
+        &style_key,
+        &config_json,
+        &model_path,
+    ) {
+        Ok(arr) => arr,
+        Err(e) => {
+            let _ = env.throw_new("java/lang/RuntimeException", e.as_str());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+fn process_with_depth_impl<'local>(
+    env: &mut JNIEnv<'local>,
+    rgba_bytes: &JByteArray<'local>,
+    width: jint,
+    height: jint,
+    preset_key: &JString<'local>,
+    style_key: &JString<'local>,
+    config_json: &JString<'local>,
+    model_path: &JString<'local>,
+) -> Result<jbyteArray, String> {
+    let preset_key: String = env.get_string(preset_key).map_err(|e| e.to_string())?.into();
+    let style_key: String = env.get_string(style_key).map_err(|e| e.to_string())?.into();
+    let config_json: String = env.get_string(config_json).map_err(|e| e.to_string())?.into();
+    let model_path_str: String = env.get_string(model_path).map_err(|e| e.to_string())?.into();
+
+    let rgba = env.convert_byte_array(rgba_bytes).map_err(|e| e.to_string())?;
+
+    let w = width as u32;
+    let h = height as u32;
+    let input = rgba_to_rgb_image(&rgba, w, h)
+        .ok_or_else(|| "Invalid image dimensions".to_string())?;
+
+    let film = stock_by_key(&preset_key).with_style(style_from_str(&style_key));
+    let config: SimulationConfig = serde_json::from_str(&config_json).unwrap_or_default();
+
+    // Attempt depth estimation when the feature is compiled in and a model path is given
+    let depth_map = estimate_depth_if_available(&input, &model_path_str, &config);
+
+    let output = crate::processor::process_image_with_depth(&input, &film, &config, depth_map.as_ref());
+    let output_bytes = output.into_raw();
+
+    env.byte_array_from_slice(&output_bytes)
+        .map(|arr| arr.into_raw())
+        .map_err(|e| e.to_string())
+}
+
+/// Run depth estimation only when the feature and model are available and relevant.
+fn estimate_depth_if_available(
+    image: &image::RgbImage,
+    model_path: &str,
+    config: &SimulationConfig,
+) -> Option<crate::depth::DepthMap> {
+    // Only bother if effects that need depth are actually enabled
+    if config.dof_amount <= 0.0 && config.object_motion_amount <= 0.0 {
+        return None;
+    }
+    if model_path.is_empty() {
+        return None;
+    }
+
+    #[cfg(feature = "depth")]
+    {
+        match crate::depth::estimate_with_model(image, model_path) {
+            Ok(dm) => Some(dm),
+            Err(e) => {
+                eprintln!("[filmr-android] depth estimation failed: {e}");
+                None
+            }
+        }
+    }
+
+    #[cfg(not(feature = "depth"))]
+    {
+        let _ = (image, model_path);
+        None
+    }
+}

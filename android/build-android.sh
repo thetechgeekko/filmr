@@ -20,8 +20,10 @@
 #
 # Usage
 # -----
-#   ./android/build-android.sh            # release build
-#   ./android/build-android.sh --debug    # debug build
+#   ./android/build-android.sh                  # release build (no depth)
+#   ./android/build-android.sh --with-depth     # release build + depth estimation
+#   ./android/build-android.sh --debug          # debug build
+#   ./android/build-android.sh --debug --with-depth
 
 set -euo pipefail
 
@@ -30,8 +32,19 @@ FILMR_ROOT="$(dirname "$SCRIPT_DIR")"
 UNPROCESS_JNILIBS="${FILMR_ROOT}/../unprocess/app/src/main/jniLibs"
 
 BUILD_TYPE="release"
-if [[ "${1:-}" == "--debug" ]]; then
-  BUILD_TYPE="debug"
+WITH_DEPTH=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --debug)       BUILD_TYPE="debug" ;;
+    --with-depth)  WITH_DEPTH=1 ;;
+  esac
+done
+
+FEATURES="android"
+if [[ "$WITH_DEPTH" == "1" ]]; then
+  FEATURES="android,depth"
+  echo "==> Depth estimation enabled (requires ~95 MB model download on first use)"
 fi
 
 ABIS=(
@@ -51,10 +64,10 @@ for entry in "${ABIS[@]}"; do
   echo "    Building for ${ABI} (${TARGET}) ..."
 
   if [[ "$BUILD_TYPE" == "release" ]]; then
-    cargo ndk -t "$ABI" build --release --features android
+    cargo ndk -t "$ABI" build --release --features "$FEATURES"
     SO_PATH="target/${TARGET}/release/libfilmr.so"
   else
-    cargo ndk -t "$ABI" build --features android
+    cargo ndk -t "$ABI" build --features "$FEATURES"
     SO_PATH="target/${TARGET}/debug/libfilmr.so"
   fi
 
