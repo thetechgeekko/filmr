@@ -27,6 +27,46 @@
 
 set -euo pipefail
 
+# ---------------------------------------------------------------------------
+# Preflight checks
+# ---------------------------------------------------------------------------
+
+# 1. cargo-ndk installed
+if ! command -v cargo-ndk &>/dev/null; then
+  echo "ERROR: cargo-ndk not found. Install with:"
+  echo "  cargo install cargo-ndk"
+  exit 1
+fi
+
+# 2. ANDROID_NDK_HOME set and pointing to a real directory
+if [[ -z "${ANDROID_NDK_HOME:-}" ]]; then
+  echo "ERROR: ANDROID_NDK_HOME is not set."
+  echo "  export ANDROID_NDK_HOME=\$HOME/Library/Android/sdk/ndk/<version>"
+  exit 1
+fi
+if [[ ! -d "$ANDROID_NDK_HOME" ]]; then
+  echo "ERROR: ANDROID_NDK_HOME='$ANDROID_NDK_HOME' does not exist."
+  exit 1
+fi
+
+# 3. All four Rust Android targets installed
+REQUIRED_TARGETS=(aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android)
+MISSING=()
+for t in "${REQUIRED_TARGETS[@]}"; do
+  rustup target list --installed | grep -q "$t" || MISSING+=("$t")
+done
+if [[ ${#MISSING[@]} -gt 0 ]]; then
+  echo "ERROR: Missing Rust targets: ${MISSING[*]}"
+  echo "  Run: rustup target add ${MISSING[*]}"
+  exit 1
+fi
+
+echo "==> Preflight OK"
+
+# ---------------------------------------------------------------------------
+# Build
+# ---------------------------------------------------------------------------
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FILMR_ROOT="$(dirname "$SCRIPT_DIR")"
 UNPROCESS_JNILIBS="${FILMR_ROOT}/../unprocess/app/src/main/jniLibs"
