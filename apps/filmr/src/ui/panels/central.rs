@@ -31,6 +31,13 @@ fn render_image_canvas(app: &mut FilmrApp, ui: &mut egui::Ui, ctx: &Context) {
             app.zoom *= zoom_delta;
         }
     }
+    // Two-finger scroll = pan (macOS trackpad)
+    if response.hovered() {
+        let scroll = ctx.input(|i| i.smooth_scroll_delta);
+        if scroll != Vec2::ZERO {
+            app.offset += scroll;
+        }
+    }
     if response.dragged() {
         app.offset += response.drag_delta();
     }
