@@ -265,7 +265,7 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getAv
         .iter()
         .map(|s| {
             format!(
-                r#"{{"manufacturer":"{}","name":"{}","iso":{}}}"#,
+                r#"{{"manufacturer":"{}","name":"{}","iso":{}}}",
                 s.manufacturer, s.name, s.iso as u32
             )
         })
@@ -308,9 +308,9 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getDe
 ///                           the camera → sRGB correction matrix)
 ///   - BitsPerSample        — used to scale U8 data to 16-bit range
 ///
-/// After bilinear Bayer demosaicing, the ColorMatrix1-derived camera→sRGB
-/// 3×3 matrix is applied to each pixel to produce accurate sRGB output.
-/// If the tag is absent the step is silently skipped.
+/// After Malvar-He-Cutler Bayer demosaicing, the ColorMatrix1-derived
+/// camera→sRGB 3×3 matrix is applied to each pixel to produce accurate
+/// sRGB output. If the tag is absent the step is silently skipped.
 ///
 /// Return protocol:
 ///   - First 4 bytes: image width  as little-endian i32
@@ -456,69 +456,122 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
         ));
     }
 
-    // --- Bilinear Bayer demosaic ---
-    // cfa[row%2 * 2 + col%2] → 0=R, 1=G, 2=B
-    let mut rgb = vec![0f32; w * h * 3];
+    // --- Malvar-He-Cutler gradient-corrected demosaic ---
+    // Three-pass approach: (1) gradient-corrected Green everywhere,
+    // (2) Red via (R−G) colour-difference bilinear, (3) Blue likewise.
 
-    // Helper: safe pixel fetch with border clamping
+    // Safe pixel fetch with border clamping
     let bayer = |row: isize, col: isize| -> f32 {
         let r = row.clamp(0, h as isize - 1) as usize;
         let c = col.clamp(0, w as isize - 1) as usize;
         samples[r * w + c]
     };
+    // Channel index at (row, col): 0=R, 1=G, 2=B
+    let ch = |row: usize, col: usize| -> usize {
+        cfa[(row % 2) * 2 + (col % 2)] as usize
+    };
 
+    // Pass 1: Green channel
+    // At G sites: copy directly.
+    // At R/B sites: 5-tap gradient-corrected formula
+    //   G = (2*(N+S+E+W) + 4*C - (NN+SS+EE+WW)) / 8
+    let mut green = vec![0.0f32; w * h];
     for row in 0..h {
         for col in 0..w {
-            let channel = cfa[(row % 2) * 2 + (col % 2)] as usize; // 0=R,1=G,2=B
             let r = row as isize;
             let c = col as isize;
-
-            let (out_r, out_g, out_b) = match channel {
-                0 => {
-                    // At R pixel: R known, interpolate G and B
-                    let r_val = bayer(r, c);
-                    let g_val = (bayer(r-1,c) + bayer(r+1,c) + bayer(r,c-1) + bayer(r,c+1)) / 4.0;
-                    let b_val = (bayer(r-1,c-1) + bayer(r-1,c+1) + bayer(r+1,c-1) + bayer(r+1,c+1)) / 4.0;
-                    (r_val, g_val, b_val)
-                }
-                1 => {
-                    // At G pixel: G known, interpolate R and B from neighbours
-                    let g_val = bayer(r, c);
-                    // Determine if G is on an R-row or B-row
-                    let r_row = cfa[(row % 2) * 2] == 0; // first col in this row is R?
-                    if r_row {
-                        // G on R-row: R left/right, B above/below
-                        let r_val = (bayer(r, c-1) + bayer(r, c+1)) / 2.0;
-                        let b_val = (bayer(r-1, c) + bayer(r+1, c)) / 2.0;
-                        (r_val, g_val, b_val)
-                    } else {
-                        // G on B-row: R above/below, B left/right
-                        let r_val = (bayer(r-1, c) + bayer(r+1, c)) / 2.0;
-                        let b_val = (bayer(r, c-1) + bayer(r, c+1)) / 2.0;
-                        (r_val, g_val, b_val)
-                    }
-                }
-                2 => {
-                    // At B pixel: B known, interpolate G and R
-                    let b_val = bayer(r, c);
-                    let g_val = (bayer(r-1,c) + bayer(r+1,c) + bayer(r,c-1) + bayer(r,c+1)) / 4.0;
-                    let r_val = (bayer(r-1,c-1) + bayer(r-1,c+1) + bayer(r+1,c-1) + bayer(r+1,c+1)) / 4.0;
-                    (r_val, g_val, b_val)
-                }
-                _ => (bayer(r, c), bayer(r, c), bayer(r, c)),
+            green[row * w + col] = if ch(row, col) == 1 {
+                bayer(r, c)
+            } else {
+                ((2.0 * (bayer(r-1,c) + bayer(r+1,c) + bayer(r,c-1) + bayer(r,c+1))
+                  + 4.0 * bayer(r, c)
+                  - (bayer(r-2,c) + bayer(r+2,c) + bayer(r,c-2) + bayer(r,c+2))) / 8.0)
+                    .clamp(0.0, 1.0)
             };
-
-            // Apply camera → sRGB colour correction when ColorMatrix1 is available
-            let (sr, sg, sb) = match cam_to_srgb {
-                Some(m) => mat3_apply(m, out_r, out_g, out_b),
-                None    => (out_r, out_g, out_b),
-            };
-
-            let base = (row * w + col) * 3;
-            rgb[base]     = sr.clamp(0.0, 1.0);
-            rgb[base + 1] = sg.clamp(0.0, 1.0);
-            rgb[base + 2] = sb.clamp(0.0, 1.0);
         }
+    }
+
+    // Interpolated green lookup with border clamping
+    let g_at = |row: isize, col: isize| -> f32 {
+        let r = row.clamp(0, h as isize - 1) as usize;
+        let c = col.clamp(0, w as isize - 1) as usize;
+        green[r * w + c]
+    };
+
+    // Pass 2: Red channel via (R−G) colour-difference interpolation
+    // At R site:  copy directly.
+    // At G site:  average (R−G) of the two R neighbours (horizontal or vertical).
+    // At B site:  average (R−G) of the four diagonal R neighbours.
+    let mut red = vec![0.0f32; w * h];
+    for row in 0..h {
+        for col in 0..w {
+            let r = row as isize;
+            let c = col as isize;
+            red[row * w + col] = match ch(row, col) {
+                0 => bayer(r, c),
+                1 => {
+                    // Check if horizontal neighbours carry Red
+                    let r_horiz = ch(row, col.wrapping_add(w).wrapping_sub(1) % w) == 0
+                        || ch(row, (col + 1) % w) == 0;
+                    let diff = if r_horiz {
+                        ((bayer(r,c-1) - g_at(r,c-1)) + (bayer(r,c+1) - g_at(r,c+1))) / 2.0
+                    } else {
+                        ((bayer(r-1,c) - g_at(r-1,c)) + (bayer(r+1,c) - g_at(r+1,c))) / 2.0
+                    };
+                    (g_at(r, c) + diff).clamp(0.0, 1.0)
+                }
+                _ => {
+                    let diff = ((bayer(r-1,c-1) - g_at(r-1,c-1))
+                              + (bayer(r-1,c+1) - g_at(r-1,c+1))
+                              + (bayer(r+1,c-1) - g_at(r+1,c-1))
+                              + (bayer(r+1,c+1) - g_at(r+1,c+1))) / 4.0;
+                    (g_at(r, c) + diff).clamp(0.0, 1.0)
+                }
+            };
+        }
+    }
+
+    // Pass 3: Blue channel (symmetric to Red)
+    let mut blue = vec![0.0f32; w * h];
+    for row in 0..h {
+        for col in 0..w {
+            let r = row as isize;
+            let c = col as isize;
+            blue[row * w + col] = match ch(row, col) {
+                2 => bayer(r, c),
+                1 => {
+                    // Check if horizontal neighbours carry Blue
+                    let b_horiz = ch(row, col.wrapping_add(w).wrapping_sub(1) % w) == 2
+                        || ch(row, (col + 1) % w) == 2;
+                    let diff = if b_horiz {
+                        ((bayer(r,c-1) - g_at(r,c-1)) + (bayer(r,c+1) - g_at(r,c+1))) / 2.0
+                    } else {
+                        ((bayer(r-1,c) - g_at(r-1,c)) + (bayer(r+1,c) - g_at(r+1,c))) / 2.0
+                    };
+                    (g_at(r, c) + diff).clamp(0.0, 1.0)
+                }
+                _ => {
+                    let diff = ((bayer(r-1,c-1) - g_at(r-1,c-1))
+                              + (bayer(r-1,c+1) - g_at(r-1,c+1))
+                              + (bayer(r+1,c-1) - g_at(r+1,c-1))
+                              + (bayer(r+1,c+1) - g_at(r+1,c+1))) / 4.0;
+                    (g_at(r, c) + diff).clamp(0.0, 1.0)
+                }
+            };
+        }
+    }
+
+    // Assemble RGB planes with optional camera → sRGB colour correction
+    let mut rgb = vec![0f32; w * h * 3];
+    for i in 0..(w * h) {
+        let (sr, sg, sb) = match cam_to_srgb {
+            Some(m) => mat3_apply(m, red[i], green[i], blue[i]),
+            None    => (red[i], green[i], blue[i]),
+        };
+        let base = i * 3;
+        rgb[base]     = sr.clamp(0.0, 1.0);
+        rgb[base + 1] = sg.clamp(0.0, 1.0);
+        rgb[base + 2] = sb.clamp(0.0, 1.0);
     }
 
     // Convert to u8
