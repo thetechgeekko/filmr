@@ -95,13 +95,13 @@ pub fn apply_dark_pro_theme(ctx: &egui::Context) {
     // Spacing — tight, professional
     style.spacing.item_spacing = egui::vec2(4.0, 4.0);
     style.spacing.window_margin = egui::Margin::same(8);
-    style.spacing.button_padding = egui::vec2(6.0, 2.0);
+    style.spacing.button_padding = egui::vec2(8.0, 4.0);
     style.spacing.slider_width = 120.0;
-    style.spacing.slider_rail_height = 3.0;
+    style.spacing.slider_rail_height = 4.0;
     style.spacing.scroll.bar_width = 5.0;
     style.spacing.scroll.bar_inner_margin = 2.0;
     style.spacing.indent = 16.0;
-    style.spacing.interact_size = egui::vec2(32.0, 16.0); // smaller interactive area
+    style.spacing.interact_size = egui::vec2(40.0, 18.0); // comfortable click targets
 
     // Text styles — ark-pixel 12px base
     use egui::{FontId, TextStyle};

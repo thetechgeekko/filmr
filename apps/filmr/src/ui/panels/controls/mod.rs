@@ -127,13 +127,14 @@ pub fn render_controls(app: &mut FilmrApp, ctx: &Context) {
                 let btn = |selected, label| {
                     egui::Button::new(
                         egui::RichText::new(label)
-                            .size(12.0)
+                            .size(13.0)
                             .strong()
                             .color(if selected { text_dark } else { text_secondary }),
                     )
                     .fill(if selected { accent } else { bg_medium })
                     .stroke(egui::Stroke::NONE)
                     .corner_radius(4.0)
+                    .min_size(egui::vec2(0.0, 24.0))
                 };
                 centered_horizontal(ui, "mode_switch", |ui| {
                     if ui.add(btn(is_simple, "Simple")).clicked() {
@@ -182,12 +183,12 @@ pub fn render_controls(app: &mut FilmrApp, ctx: &Context) {
                                 flex_grow: 1.0,
                                 justify_content: Some(taffy::JustifyContent::Center),
                                 align_items: Some(taffy::AlignItems::Center),
-                                padding: length(6.0),
+                                padding: length(8.0),
                                 ..Default::default()
                             })
                             .ui(|ui| {
                                 let text =
-                                    egui::RichText::new(label).size(12.0).color(if is_active {
+                                    egui::RichText::new(label).size(13.0).color(if is_active {
                                         accent_c
                                     } else {
                                         text_secondary_c
@@ -195,7 +196,8 @@ pub fn render_controls(app: &mut FilmrApp, ctx: &Context) {
                                 let text = if is_active { text.strong() } else { text };
                                 let btn = egui::Button::new(text)
                                     .fill(egui::Color32::TRANSPARENT)
-                                    .stroke(egui::Stroke::NONE);
+                                    .stroke(egui::Stroke::NONE)
+                                    .min_size(egui::vec2(0.0, 24.0));
                                 let response = ui.add(btn);
                                 if is_active {
                                     let rect = response.rect;
