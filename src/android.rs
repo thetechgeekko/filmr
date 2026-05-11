@@ -589,13 +589,17 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
 /// Process a raw DNG file through the filmr engine.
 ///
 /// The DNG is decoded (demosaiced) to linear RGB, then the filmr film
-/// simulation is applied.
+/// simulation is applied.  When `model_path` is non-empty and the depth
+/// feature is compiled in, monocular depth estimation drives DOF and
+/// object-motion blur — matching the behaviour of `processImageWithDepth`.
 ///
 /// Parameters (from Kotlin):
 /// - `dng_bytes`   : raw DNG file bytes
 /// - `preset_key`  : preset identifier string (e.g. "KODAK_PORTRA_400")
 /// - `style_key`   : style identifier string  (e.g. "ACCURATE", "ARTISTIC")
 /// - `config_json` : JSON-encoded `SimulationConfig`
+/// - `model_path`  : absolute path to the depth model on-device, or empty
+///                   string to skip depth estimation
 ///
 /// Returns a `ByteArray` where:
 ///   - Bytes 0–3: image width  as little-endian signed 32-bit integer
@@ -613,8 +617,9 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_proce
     preset_key: JString<'local>,
     style_key: JString<'local>,
     config_json: JString<'local>,
+    model_path: JString<'local>,
 ) -> jbyteArray {
-    match process_raw_dng_impl(&mut env, &dng_bytes, &preset_key, &style_key, &config_json) {
+    match process_raw_dng_impl(&mut env, &dng_bytes, &preset_key, &style_key, &config_json, &model_path) {
         Ok(arr) => arr,
         Err(e) => {
             let _ = env.throw_new("java/lang/RuntimeException", e.as_str());
@@ -630,10 +635,12 @@ fn process_raw_dng_impl<'local>(
     preset_key: &JString<'local>,
     style_key: &JString<'local>,
     config_json: &JString<'local>,
+    model_path: &JString<'local>,
 ) -> Result<jbyteArray, String> {
     let preset_key: String = env.get_string(preset_key).map_err(|e| e.to_string())?.into();
     let style_key: String = env.get_string(style_key).map_err(|e| e.to_string())?.into();
     let config_json: String = env.get_string(config_json).map_err(|e| e.to_string())?.into();
+    let model_path_str: String = env.get_string(model_path).map_err(|e| e.to_string())?.into();
 
     let dng = env.convert_byte_array(dng_bytes).map_err(|e| e.to_string())?;
 
@@ -656,7 +663,10 @@ fn process_raw_dng_impl<'local>(
     let film = stock_by_key(&preset_key).with_style(style_from_str(&style_key));
     let config: SimulationConfig = serde_json::from_str(&config_json).unwrap_or_default();
 
-    let output = process_image(&input, &film, &config);
+    // Attempt depth estimation when the feature is compiled in and a model path is given
+    let depth_map = estimate_depth_if_available(&input, &model_path_str, &config);
+
+    let output = crate::processor::process_image_with_depth(&input, &film, &config, depth_map.as_ref());
     let output_rgb = output.into_raw(); // width×height×3
 
     // Re-pack with dimension header so Kotlin knows the size
