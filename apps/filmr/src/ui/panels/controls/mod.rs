@@ -127,13 +127,13 @@ pub fn render_controls(app: &mut FilmrApp, ctx: &Context) {
                 let btn = |selected, label| {
                     egui::Button::new(
                         egui::RichText::new(label)
-                            .size(13.0)
+                            .size(12.0)
                             .strong()
                             .color(if selected { text_dark } else { text_secondary }),
                     )
                     .fill(if selected { accent } else { bg_medium })
                     .stroke(egui::Stroke::NONE)
-                    .corner_radius(4.0)
+                    .corner_radius(12.0)
                     .min_size(egui::vec2(0.0, 24.0))
                 };
                 centered_horizontal(ui, "mode_switch", |ui| {
@@ -302,7 +302,19 @@ fn render_adjust_tab(app: &mut FilmrApp, ui: &mut egui::Ui, _ctx: &Context, chan
         if ui.checkbox(&mut app.auto_levels, "🎚 Auto Levels").changed() {
             *changed = true;
         }
-        if ui.button("✨ Auto Enhance").clicked() {
+        if ui
+            .add(
+                egui::Button::new(
+                    egui::RichText::new("✨ Auto Enhance")
+                        .size(11.0)
+                        .color(egui::Color32::from_rgb(150, 150, 160)),
+                )
+                .fill(egui::Color32::from_rgb(42, 42, 48))
+                .stroke(egui::Stroke::NONE)
+                .corner_radius(4.0),
+            )
+            .clicked()
+        {
             app.white_balance_mode = filmr::WhiteBalanceMode::Auto;
             app.white_balance_strength = 1.0;
             *changed = true;

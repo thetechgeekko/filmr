@@ -140,38 +140,93 @@ pub fn render_film_list(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut boo
     }
 }
 
-/// Render the rendering style selector.
+/// Render the rendering style selector — two-row pill/segmented control.
 pub fn render_style_selector(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut bool) {
     section_header(ui, "🎨 STYLE");
 
     let accent = egui::Color32::from_rgb(230, 155, 50);
-    let bg_medium = egui::Color32::from_rgb(42, 42, 48);
+    let bg_track = egui::Color32::from_rgb(36, 36, 40);
     let text_dark = egui::Color32::from_rgb(24, 24, 28);
     let text_secondary = egui::Color32::from_rgb(150, 150, 160);
+    let text_muted = egui::Color32::from_rgb(120, 120, 130);
 
     let prev_style = app.film_style;
-    ui.horizontal_wrapped(|ui| {
-        for style in FilmStyle::all() {
-            let is_selected = app.film_style == style;
-            let btn =
-                egui::Button::new(egui::RichText::new(style.name()).size(10.0).strong().color(
-                    if is_selected {
-                        text_dark
-                    } else {
-                        text_secondary
-                    },
-                ))
-                .fill(if is_selected { accent } else { bg_medium })
-                .corner_radius(4.0);
-            if ui.add(btn).clicked() {
-                app.film_style = style;
-            }
+    let styles = FilmStyle::all();
+    let pill_height = 24.0f32;
+    let pill_radius = pill_height / 2.0;
+
+    // Short names
+    let short_name = |s: &FilmStyle| -> &'static str {
+        match s {
+            FilmStyle::HighContrast => "Hi-Con",
+            other => other.name(),
         }
-    });
+    };
+
+    // Two rows: [Accurate, Artistic, Vintage] [Hi-Con, Pastel]
+    let rows: &[&[FilmStyle]] = &[&styles[..3], &styles[3..]];
+    let mut global_idx = 0usize;
+
+    for row in rows {
+        let avail_width = ui.available_width();
+        let (track_rect, _) =
+            ui.allocate_exact_size(egui::vec2(avail_width, pill_height), egui::Sense::hover());
+        ui.painter().rect_filled(track_rect, pill_radius, bg_track);
+
+        let n = row.len() as f32;
+        let seg_w = track_rect.width() / n;
+
+        // Selected highlight
+        if let Some(local_sel) = row.iter().position(|s| *s == app.film_style) {
+            let sel_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    track_rect.left() + local_sel as f32 * seg_w,
+                    track_rect.top(),
+                ),
+                egui::vec2(seg_w, pill_height),
+            );
+            ui.painter().rect_filled(sel_rect, pill_radius, accent);
+        }
+
+        for (i, style) in row.iter().enumerate() {
+            let is_selected = app.film_style == *style;
+            let seg_rect = egui::Rect::from_min_size(
+                egui::pos2(track_rect.left() + i as f32 * seg_w, track_rect.top()),
+                egui::vec2(seg_w, pill_height),
+            );
+            let resp = ui.interact(
+                seg_rect,
+                ui.id().with(("style", global_idx)),
+                egui::Sense::click(),
+            );
+            let color = if is_selected {
+                text_dark
+            } else {
+                text_secondary
+            };
+            ui.painter().text(
+                seg_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                short_name(style),
+                egui::FontId::proportional(11.0),
+                color,
+            );
+            if resp.clicked() {
+                app.film_style = *style;
+            }
+            global_idx += 1;
+        }
+        ui.add_space(3.0);
+    }
 
     if app.film_style != prev_style {
         *changed = true;
     }
 
-    ui.small(app.film_style.short_description());
+    ui.add_space(2.0);
+    ui.label(
+        egui::RichText::new(app.film_style.short_description())
+            .size(11.0)
+            .color(text_muted),
+    );
 }
