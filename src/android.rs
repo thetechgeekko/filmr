@@ -108,6 +108,61 @@ fn rgba_to_rgb_image(rgba: &[u8], w: u32, h: u32) -> Option<RgbImage> {
 }
 
 // ---------------------------------------------------------------------------
+// 3×3 matrix helpers (used for DNG colour correction)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "android")]
+fn mat3_inverse(m: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
+    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    if det.abs() < 1e-10 {
+        return None;
+    }
+    let d = 1.0 / det;
+    Some([
+        [
+            (m[1][1] * m[2][2] - m[1][2] * m[2][1]) * d,
+            (m[0][2] * m[2][1] - m[0][1] * m[2][2]) * d,
+            (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * d,
+        ],
+        [
+            (m[1][2] * m[2][0] - m[1][0] * m[2][2]) * d,
+            (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * d,
+            (m[0][2] * m[1][0] - m[0][0] * m[1][2]) * d,
+        ],
+        [
+            (m[1][0] * m[2][1] - m[1][1] * m[2][0]) * d,
+            (m[0][1] * m[2][0] - m[0][0] * m[2][1]) * d,
+            (m[0][0] * m[1][1] - m[0][1] * m[1][0]) * d,
+        ],
+    ])
+}
+
+#[cfg(feature = "android")]
+fn mat3_mul(a: [[f32; 3]; 3], b: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    let mut c = [[0.0f32; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            for k in 0..3 {
+                c[i][j] += a[i][k] * b[k][j];
+            }
+        }
+    }
+    c
+}
+
+#[cfg(feature = "android")]
+#[inline]
+fn mat3_apply(m: [[f32; 3]; 3], r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+    (
+        m[0][0] * r + m[0][1] * g + m[0][2] * b,
+        m[1][0] * r + m[1][1] * g + m[1][2] * b,
+        m[2][0] * r + m[2][1] * g + m[2][2] * b,
+    )
+}
+
+// ---------------------------------------------------------------------------
 // JNI exports
 // ---------------------------------------------------------------------------
 
@@ -210,7 +265,7 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getAv
         .iter()
         .map(|s| {
             format!(
-                r#"{{"manufacturer":"{}","name":"{}","iso":{}}}}"#,
+                r#"{{"manufacturer":"{}","name":"{}","iso":{}}}"#,
                 s.manufacturer, s.name, s.iso as u32
             )
         })
@@ -249,10 +304,13 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getDe
 ///   - Tag 33422 / 0x828D  — CFAPattern (2×2 Bayer mosaic, default RGGB)
 ///   - Tag 50714 / 0xC5BA  — BlackLevel (per-channel; scalar fallback = 0)
 ///   - Tag 50717 / 0xC5BD  — WhiteLevel (scalar; default 65535 for 16-bit)
+///   - Tag 50721 / 0xC621  — ColorMatrix1 (XYZ D50 → camera; used to build
+///                           the camera → sRGB correction matrix)
 ///   - BitsPerSample        — used to scale U8 data to 16-bit range
 ///
-/// The demosaic is a simple bilinear interpolation (Malvar-class quality is
-/// not required here because filmr will substantially remap the tones anyway).
+/// After bilinear Bayer demosaicing, the ColorMatrix1-derived camera→sRGB
+/// 3×3 matrix is applied to each pixel to produce accurate sRGB output.
+/// If the tag is absent the step is silently skipped.
 ///
 /// Return protocol:
 ///   - First 4 bytes: image width  as little-endian i32
@@ -265,11 +323,11 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
     use tiff::tags::Tag;
 
     // DNG-specific tag numbers (not in the tiff crate's built-in Tag enum)
-    const TAG_CFA_PATTERN: u16 = 0x828D; // 33422
-    // DNG spec tag numbers
+    const TAG_CFA_PATTERN: u16 = 0x828D;    // 33422
     const TAG_BLACK_LEVEL_CORRECT: u16 = 0xC61A; // 50714
-
-    const TAG_WHITE_LEVEL: u16 = 0xC61D; // 50717
+    const TAG_WHITE_LEVEL: u16 = 0xC61D;    // 50717
+    // ColorMatrix1: XYZ (D50) → camera native RGB (9 SRational values, row-major)
+    const TAG_COLOR_MATRIX1: u16 = 0xC621;  // 50721
 
     let cursor = Cursor::new(dng);
     let mut decoder = Decoder::new(cursor).map_err(|e| format!("TIFF decode error: {e}"))?;
@@ -313,6 +371,33 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
         .and_then(|v| v.into_u32_vec().ok().and_then(|vec| vec.into_iter().next()))
         .unwrap_or(16);
 
+    // --- ColorMatrix1 (XYZ D50 → Camera) → derive Camera → sRGB matrix ---
+    // ColorMatrix1 stores 9 SRational values in row-major order representing the
+    // 3×3 matrix M such that CameraRGB = M × XYZ_D50.
+    // Inverting M gives Camera → XYZ_D50, then multiplying by the standard
+    // XYZ_D50 → linear-sRGB matrix (Bradford-adapted) completes the transform.
+    let cam_to_srgb: Option<[[f32; 3]; 3]> = decoder
+        .find_tag(Tag::Unknown(TAG_COLOR_MATRIX1))
+        .ok()
+        .flatten()
+        .and_then(|v| v.into_f32_vec().ok())
+        .filter(|v| v.len() >= 9)
+        .and_then(|v| {
+            let m_xyz_to_cam = [
+                [v[0], v[1], v[2]],
+                [v[3], v[4], v[5]],
+                [v[6], v[7], v[8]],
+            ];
+            let m_cam_to_xyz = mat3_inverse(m_xyz_to_cam)?;
+            // Bradford-adapted XYZ D50 → linear sRGB matrix
+            let m_xyz_to_srgb = [
+                [ 3.1338561_f32, -1.6168667, -0.4906146],
+                [-0.9787684_f32,  1.9161415,  0.0334540],
+                [ 0.0719453_f32, -0.2289914,  1.4052427],
+            ];
+            Some(mat3_mul(m_xyz_to_srgb, m_cam_to_xyz))
+        });
+
     // --- CFAPattern (2×2: R=0, G=1, B=2) ---
     // Default = RGGB
     let cfa: [u8; 4] = decoder
@@ -329,7 +414,6 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
         .ok()
         .flatten()
         .and_then(|v| {
-            // may be rational, u16, u32, or f32
             v.into_f32().ok().or_else(|| None)
         })
         .unwrap_or(0.0_f32);
@@ -354,7 +438,7 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
 
     // Normalise every sample to [0.0, 1.0]
     let samples: Vec<f32> = match raw_data {
-        DecodingResult::U8(v) => v.iter().map(|&x| (x as f32 - black_level) / scale).collect(),
+        DecodingResult::U8(v)  => v.iter().map(|&x| (x as f32 - black_level) / scale).collect(),
         DecodingResult::U16(v) => v.iter().map(|&x| (x as f32 - black_level) / scale).collect(),
         DecodingResult::U32(v) => v.iter().map(|&x| (x as f32 - black_level) / scale).collect(),
         DecodingResult::I16(v) => v.iter().map(|&x| (x as f32 - black_level) / scale).collect(),
@@ -367,7 +451,7 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
 
     if samples.len() < w * h {
         return Err(format!(
-            "RAW data too short: got {} samples, expected ××={}",
+            "RAW data too short: got {} samples, expected {}x{}={}",
             samples.len(), w, h, w * h
         ));
     }
@@ -424,10 +508,16 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
                 _ => (bayer(r, c), bayer(r, c), bayer(r, c)),
             };
 
+            // Apply camera → sRGB colour correction when ColorMatrix1 is available
+            let (sr, sg, sb) = match cam_to_srgb {
+                Some(m) => mat3_apply(m, out_r, out_g, out_b),
+                None    => (out_r, out_g, out_b),
+            };
+
             let base = (row * w + col) * 3;
-            rgb[base]     = out_r.clamp(0.0, 1.0);
-            rgb[base + 1] = out_g.clamp(0.0, 1.0);
-            rgb[base + 2] = out_b.clamp(0.0, 1.0);
+            rgb[base]     = sr.clamp(0.0, 1.0);
+            rgb[base + 1] = sg.clamp(0.0, 1.0);
+            rgb[base + 2] = sb.clamp(0.0, 1.0);
         }
     }
 
@@ -494,7 +584,7 @@ fn process_raw_dng_impl<'local>(
 
     let dng = env.convert_byte_array(dng_bytes).map_err(|e| e.to_string())?;
 
-    // Decode DNG → demosaiced linear RGB (with dimension header)
+    // Decode DNG → demosaiced + colour-corrected sRGB (with dimension header)
     let decoded = decode_dng_to_rgb(&dng)?;
 
     // Extract dimensions from the header we prepended
