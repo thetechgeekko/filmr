@@ -51,6 +51,7 @@ pub const MODEL_SIZE: u64 = 99_060_839; // ~95MB
 /// Expected SHA-256 hex digest of the downloaded model file.
 /// Leave empty to skip verification (e.g. during development).
 /// Fill in after verifying the model once with `sha256sum`.
+#[allow(dead_code)]
 const EXPECTED_MODEL_SHA256: &str = ""; // TODO: fill in after verifying model
 
 /// Download the depth model with progress callback.

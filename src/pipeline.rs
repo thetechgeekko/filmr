@@ -854,7 +854,7 @@ impl PipelineStage for DevelopStage {
         let film = context.film;
         let config = context.config;
         let width = image.width();
-        let height = image.height();
+        let _height = image.height();
 
         // Precompute Spectral Matrix (3x3)
         // Maps Linear RGB -> Film Layer Exposure directly
@@ -876,7 +876,7 @@ impl PipelineStage for DevelopStage {
         let t_eff = config.exposure_time / reciprocity_factor;
 
         // White Balance Calculation — shared helper keeps logic in sync with AccurateDevelopStage.
-        let exposure_avg = sample_exposure_average(image, |r, g, b| apply_matrix(r, g, b));
+        let exposure_avg = sample_exposure_average(image, apply_matrix);
         let wb_gains = compute_wb_gains(config, exposure_avg);
 
         // Transform in place: Linear -> Density

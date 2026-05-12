@@ -19,6 +19,7 @@ use jni::sys::{jbyteArray, jint, jstring};
 #[cfg(feature = "android")]
 use jni::JNIEnv;
 
+#[cfg(any(feature = "android", test))]
 const MAX_SAFE_JNI_ARRAY_LEN: usize = 256 * 1024 * 1024; // 256 MB
 
 /// Check that a JNI array length value is within safe bounds.
@@ -26,6 +27,7 @@ const MAX_SAFE_JNI_ARRAY_LEN: usize = 256 * 1024 * 1024; // 256 MB
 /// Returns `Ok(len as usize)` when valid, or an `Err` message otherwise.
 /// Extracted from the inline guards in the JNI entry-points so that it can be
 /// unit-tested without a live JVM.
+#[cfg(any(feature = "android", test))]
 fn check_jni_array_len(len: i32) -> Result<usize, String> {
     if len < 0 || len as usize > MAX_SAFE_JNI_ARRAY_LEN {
         return Err(format!("JNI array length out of range: {}", len));
@@ -37,6 +39,7 @@ fn check_jni_array_len(len: i32) -> Result<usize, String> {
 ///
 /// Extracted from `decode_dng_to_rgb` so that the guard can be tested
 /// independently of a live TIFF decoder.
+#[cfg(any(feature = "android", test))]
 fn check_dng_dimensions(width: u32, height: u32) -> Result<(), String> {
     const MAX_DNG_DIM: u32 = 16384;
     if width > MAX_DNG_DIM || height > MAX_DNG_DIM {
@@ -263,22 +266,13 @@ fn process_image_impl<'local>(
         .map_err(|e| e.to_string())?
         .into();
 
-    if width < 0 || width as usize > MAX_SAFE_JNI_ARRAY_LEN {
-        return Err(format!("Invalid width: {}", width));
-    }
-    if height < 0 || height as usize > MAX_SAFE_JNI_ARRAY_LEN {
-        return Err(format!("Invalid height: {}", height));
-    }
+    check_jni_array_len(width)?;
+    check_jni_array_len(height)?;
 
     let array_len = env
         .get_array_length(rgba_bytes)
         .map_err(|e| e.to_string())?;
-    if array_len < 0 || array_len as usize > MAX_SAFE_JNI_ARRAY_LEN {
-        return Err(format!(
-            "rgba_bytes array length out of bounds: {}",
-            array_len
-        ));
-    }
+    check_jni_array_len(array_len)?;
 
     let rgba = env
         .convert_byte_array(rgba_bytes)
@@ -310,7 +304,7 @@ fn process_image_impl<'local>(
 pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getAvailablePresets<
     'local,
 >(
-    mut env: JNIEnv<'local>,
+    env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) -> jstring {
     let stocks = crate::presets::get_all_stocks();
@@ -358,8 +352,7 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getDe
 ///   - Tag 33422 / 0x828D  — CFAPattern (2×2 Bayer mosaic, default RGGB)
 ///   - Tag 50714 / 0xC5BA  — BlackLevel (per-channel; scalar fallback = 0)
 ///   - Tag 50717 / 0xC5BD  — WhiteLevel (scalar; default 65535 for 16-bit)
-///   - Tag 50721 / 0xC621  — ColorMatrix1 (XYZ D50 → camera; used to build
-///                           the camera → sRGB correction matrix)
+///   - Tag 50721 / 0xC621  — ColorMatrix1 (XYZ D50 → camera → sRGB correction matrix)
 ///   - BitsPerSample        — used to scale U8 data to 16-bit range
 ///
 /// After Malvar-He-Cutler Bayer demosaicing, the ColorMatrix1-derived
@@ -392,13 +385,7 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
 
     // --- Dimension safety cap (Issue #11) ---
     // Reject absurdly large images before any allocation to prevent OOM.
-    const MAX_DNG_DIM: u32 = 16384;
-    if width > MAX_DNG_DIM || height > MAX_DNG_DIM {
-        return Err(format!(
-            "DNG dimensions {}x{} exceed maximum {}x{}",
-            width, height, MAX_DNG_DIM, MAX_DNG_DIM
-        ));
-    }
+    check_dng_dimensions(width, height)?;
 
     // --- Compression check ---
     // DngCreator.writeImage always produces uncompressed (type 1) strips.
@@ -454,9 +441,9 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
             let m_cam_to_xyz = mat3_inverse(m_xyz_to_cam)?;
             // Bradford-adapted XYZ D50 → linear sRGB matrix
             let m_xyz_to_srgb = [
-                [3.1338561_f32, -1.6168667, -0.4906146],
-                [-0.9787684_f32, 1.9161415, 0.0334540],
-                [0.0719453_f32, -0.2289914, 1.4052427],
+                [3.133_856_f32, -1.616_867, -0.490_615],
+                [-0.978_768_f32, 1.916_142, 0.033_454],
+                [0.071_945_f32, -0.228_991, 1.405_243],
             ];
             Some(mat3_mul(m_xyz_to_srgb, m_cam_to_xyz))
         });
@@ -482,7 +469,7 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
         .find_tag(Tag::Unknown(TAG_BLACK_LEVEL_CORRECT))
         .ok()
         .flatten()
-        .and_then(|v| v.into_f32().ok().or_else(|| None))
+        .and_then(|v| v.into_f32().ok())
         .unwrap_or(0.0_f32);
 
     // --- WhiteLevel ---
@@ -687,8 +674,7 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
 /// - `preset_key`  : preset identifier string (e.g. "KODAK_PORTRA_400")
 /// - `style_key`   : style identifier string  (e.g. "ACCURATE", "ARTISTIC")
 /// - `config_json` : JSON-encoded `SimulationConfig`
-/// - `model_path`  : absolute path to the depth model on-device, or empty
-///                   string to skip depth estimation
+/// - `model_path`  : absolute path to the depth model on-device, or empty string to skip depth estimation
 ///
 /// Returns a `ByteArray` where:
 ///   - Bytes 0–3: image width  as little-endian signed 32-bit integer
@@ -747,9 +733,7 @@ fn process_raw_dng_impl<'local>(
         .into();
 
     let dng_len = env.get_array_length(dng_bytes).map_err(|e| e.to_string())?;
-    if dng_len < 0 || dng_len as usize > MAX_SAFE_JNI_ARRAY_LEN {
-        return Err(format!("dng_bytes array length out of bounds: {}", dng_len));
-    }
+    check_jni_array_len(dng_len)?;
 
     let dng = env
         .convert_byte_array(dng_bytes)
@@ -859,6 +843,7 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_proce
 }
 
 #[cfg(feature = "android")]
+#[allow(clippy::too_many_arguments)]
 fn process_with_depth_impl<'local>(
     env: &mut JNIEnv<'local>,
     rgba_bytes: &JByteArray<'local>,
@@ -883,22 +868,13 @@ fn process_with_depth_impl<'local>(
         .map_err(|e| e.to_string())?
         .into();
 
-    if width < 0 || width as usize > MAX_SAFE_JNI_ARRAY_LEN {
-        return Err(format!("Invalid width: {}", width));
-    }
-    if height < 0 || height as usize > MAX_SAFE_JNI_ARRAY_LEN {
-        return Err(format!("Invalid height: {}", height));
-    }
+    check_jni_array_len(width)?;
+    check_jni_array_len(height)?;
 
     let array_len = env
         .get_array_length(rgba_bytes)
         .map_err(|e| e.to_string())?;
-    if array_len < 0 || array_len as usize > MAX_SAFE_JNI_ARRAY_LEN {
-        return Err(format!(
-            "rgba_bytes array length out of bounds: {}",
-            array_len
-        ));
-    }
+    check_jni_array_len(array_len)?;
 
     let rgba = env
         .convert_byte_array(rgba_bytes)

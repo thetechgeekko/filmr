@@ -293,8 +293,8 @@ mod tests {
                     + (0..=r).map(|y| vals[y.min(h as i32 - 1) as usize]).sum::<f32>();
                 let mut sums = vec![init_sum; h as usize];
                 let mut s = init_sum;
-                for y in 0..h as usize {
-                    sums[y] = s;
+                for (y, sum) in sums.iter_mut().enumerate() {
+                    *sum = s;
                     let out_y = (y as i32 - r).max(0) as usize;
                     let in_y = (y as i32 + r + 1).min(h as i32 - 1) as usize;
                     s += vals[in_y] - vals[out_y];
