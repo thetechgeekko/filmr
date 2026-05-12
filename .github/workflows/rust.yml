@@ -32,3 +32,8 @@ jobs:
 
     - name: Clippy
       run: cargo clippy -p filmr --all-features --all-targets -- -D warnings && cargo clippy -p filmr_app --all-features --all-targets -- -D warnings
+
+    - name: Security audit
+      run: |
+        cargo install cargo-audit --locked 2>/dev/null || true
+        cargo audit

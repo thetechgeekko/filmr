@@ -52,6 +52,8 @@ jobs:
   web:
     name: Build and deploy site and docs
     runs-on: ubuntu-latest
+    # Only build and deploy on main pushes and after a Release run; skip on PRs
+    if: github.event_name != 'pull_request'
     steps:
       # Setup
       - uses: actions/checkout@v3
@@ -71,6 +73,10 @@ jobs:
 
       - name: Build WASM App
         working-directory: apps/filmr
+        env:
+          # wasm-bindgen-rayon requires atomics + bulk-memory + mutable-globals
+          # so the WASM binary has the __heap_base symbol for thread injection
+          RUSTFLAGS: -C target-feature=+atomics,+bulk-memory,+mutable-globals
         run: trunk build --release --public-url /web/
 
       # --- Oranda Build Steps ---

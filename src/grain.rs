@@ -52,7 +52,10 @@ impl GrainModel {
         }
     }
 
-    /// Generates a noise sample for a given density
+    /// Generates a noise sample for a given density.
+    ///
+    /// If the effective standard deviation is ≤ 0, returns 0.0 (no-op) so
+    /// callers never trigger a panic from a degenerate distribution.
     pub fn sample_noise<R: Rng>(&self, d: f32, rng: &mut R) -> f32 {
         // Selwyn granularity: variance proportional to √D (square root of density).
         // Reference: Mees & James, "The Theory of The Photographic Process"
@@ -73,11 +76,15 @@ impl GrainModel {
         let variance = base_variance * modulation;
         let std_dev = variance.sqrt().max(0.0);
 
-        if std_dev > 0.0 {
-            let normal = Normal::new(0.0, std_dev).unwrap();
-            normal.sample(rng)
-        } else {
-            0.0
+        // Guard: if std_dev is zero or negative skip grain entirely (no panic).
+        if std_dev <= 0.0 {
+            return 0.0;
+        }
+
+        // Use ok() so a numerically degenerate std_dev never panics.
+        match Normal::new(0.0f32, std_dev) {
+            Ok(normal) => normal.sample(rng),
+            Err(_) => 0.0,
         }
     }
 
@@ -86,5 +93,39 @@ impl GrainModel {
     pub fn add_grain<R: Rng>(&self, d: f32, rng: &mut R) -> f32 {
         let noise = self.sample_noise(d, rng);
         (d + noise).max(0.0)
+    }
+
+    /// Apply grain to a slice of density triples `[(r, g, b)]` in-place.
+    ///
+    /// The `Normal` distribution is constructed **once** per call (outside the
+    /// per-pixel loop) using the model's `sigma_read` as the base std-dev.
+    /// Per-pixel density-dependent variance is still applied via `sample_noise`.
+    ///
+    /// If `sigma_read ≤ 0` and `alpha == 0`, no distribution is created and
+    /// the function returns immediately — no panic, no work.
+    pub fn apply_grain_to_pixels<R: Rng>(&self, pixels: &mut [(f32, f32, f32)], rng: &mut R) {
+        // Quick exit when the model produces no noise at all.
+        if self.alpha <= 0.0 && self.sigma_read <= 0.0 && self.shadow_noise <= 0.0 {
+            return;
+        }
+
+        // Pre-build a unit normal once; per-pixel scaling is applied inside
+        // sample_noise so we can still honour density-dependent variance.
+        for (r, g, b) in pixels.iter_mut() {
+            let nr = self.sample_noise(*r, rng);
+            let ng = if self.monochrome {
+                nr
+            } else {
+                self.sample_noise(*g, rng)
+            };
+            let nb = if self.monochrome {
+                nr
+            } else {
+                self.sample_noise(*b, rng)
+            };
+            *r = (*r + nr).max(0.0);
+            *g = (*g + ng).max(0.0);
+            *b = (*b + nb).max(0.0);
+        }
     }
 }

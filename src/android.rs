@@ -6,17 +6,56 @@
 //! The Kotlin counterpart lives in:
 //!   com.reilandeubank.unprocess.engine.FilmrEngine
 
+#[cfg(feature = "android")]
 use crate::film::{FilmStock, FilmStyle};
+#[cfg(feature = "android")]
 use crate::processor::{process_image, SimulationConfig};
+#[cfg(feature = "android")]
 use image::{ImageBuffer, RgbImage};
+#[cfg(feature = "android")]
 use jni::objects::{JByteArray, JClass, JString};
+#[cfg(feature = "android")]
 use jni::sys::{jbyteArray, jint, jstring};
+#[cfg(feature = "android")]
 use jni::JNIEnv;
+
+#[cfg(any(feature = "android", test))]
+const MAX_SAFE_JNI_ARRAY_LEN: usize = 256 * 1024 * 1024; // 256 MB
+
+/// Check that a JNI array length value is within safe bounds.
+///
+/// Returns `Ok(len as usize)` when valid, or an `Err` message otherwise.
+/// Extracted from the inline guards in the JNI entry-points so that it can be
+/// unit-tested without a live JVM.
+#[cfg(any(feature = "android", test))]
+fn check_jni_array_len(len: i32) -> Result<usize, String> {
+    if len < 0 || len as usize > MAX_SAFE_JNI_ARRAY_LEN {
+        return Err(format!("JNI array length out of range: {}", len));
+    }
+    Ok(len as usize)
+}
+
+/// Check that DNG image dimensions do not exceed `MAX_DNG_DIM`.
+///
+/// Extracted from `decode_dng_to_rgb` so that the guard can be tested
+/// independently of a live TIFF decoder.
+#[cfg(any(feature = "android", test))]
+fn check_dng_dimensions(width: u32, height: u32) -> Result<(), String> {
+    const MAX_DNG_DIM: u32 = 16384;
+    if width > MAX_DNG_DIM || height > MAX_DNG_DIM {
+        return Err(format!(
+            "DNG dimensions {}x{} exceed maximum {}x{}",
+            width, height, MAX_DNG_DIM, MAX_DNG_DIM
+        ));
+    }
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Preset lookup
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "android")]
 fn stock_by_key(key: &str) -> FilmStock {
     use crate::presets::{agfa, fujifilm, ilford, kodak, other, polaroid};
     match key {
@@ -80,6 +119,7 @@ fn stock_by_key(key: &str) -> FilmStock {
     }
 }
 
+#[cfg(feature = "android")]
 fn style_from_str(s: &str) -> FilmStyle {
     match s {
         "ARTISTIC" => FilmStyle::Artistic,
@@ -94,6 +134,7 @@ fn style_from_str(s: &str) -> FilmStyle {
 // JNI helpers
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "android")]
 fn rgba_to_rgb_image(rgba: &[u8], w: u32, h: u32) -> Option<RgbImage> {
     if rgba.len() < (w * h * 4) as usize {
         return None;
@@ -176,10 +217,9 @@ fn mat3_apply(m: [[f32; 3]; 3], r: f32, g: f32, b: f32) -> (f32, f32, f32) {
 /// - `config_json`  : JSON-encoded `SimulationConfig`
 ///
 /// Returns RGB24 byte array on success, or throws RuntimeException on failure.
+#[cfg(feature = "android")]
 #[no_mangle]
-pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_processImage<
-    'local,
->(
+pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_processImage<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     rgba_bytes: JByteArray<'local>,
@@ -206,6 +246,7 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_proce
     }
 }
 
+#[cfg(feature = "android")]
 fn process_image_impl<'local>(
     env: &mut JNIEnv<'local>,
     rgba_bytes: &JByteArray<'local>,
@@ -219,14 +260,19 @@ fn process_image_impl<'local>(
         .get_string(preset_key)
         .map_err(|e| e.to_string())?
         .into();
-    let style_key: String = env
-        .get_string(style_key)
-        .map_err(|e| e.to_string())?
-        .into();
+    let style_key: String = env.get_string(style_key).map_err(|e| e.to_string())?.into();
     let config_json: String = env
         .get_string(config_json)
         .map_err(|e| e.to_string())?
         .into();
+
+    check_jni_array_len(width)?;
+    check_jni_array_len(height)?;
+
+    let array_len = env
+        .get_array_length(rgba_bytes)
+        .map_err(|e| e.to_string())?;
+    check_jni_array_len(array_len)?;
 
     let rgba = env
         .convert_byte_array(rgba_bytes)
@@ -240,7 +286,7 @@ fn process_image_impl<'local>(
     let film = stock_by_key(&preset_key).with_style(style_from_str(&style_key));
 
     let config: SimulationConfig =
-        serde_json::from_str(&config_json).unwrap_or_default();
+        serde_json::from_str(&config_json).map_err(|e| format!("Invalid config JSON: {e}"))?;
 
     let output = process_image(&input, &film, &config);
     let output_bytes = output.into_raw();
@@ -253,11 +299,12 @@ fn process_image_impl<'local>(
 /// Return a JSON array of all available presets.
 ///
 /// Each element: `{"key":"KODAK_PORTRA_400","manufacturer":"Kodak","name":"Portra 400","iso":400}`
+#[cfg(feature = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getAvailablePresets<
     'local,
 >(
-    mut env: JNIEnv<'local>,
+    env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) -> jstring {
     let stocks = crate::presets::get_all_stocks();
@@ -277,6 +324,7 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getAv
 }
 
 /// Return a JSON-encoded default `SimulationConfig`.
+#[cfg(feature = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getDefaultConfig<
     'local,
@@ -304,8 +352,7 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getDe
 ///   - Tag 33422 / 0x828D  — CFAPattern (2×2 Bayer mosaic, default RGGB)
 ///   - Tag 50714 / 0xC5BA  — BlackLevel (per-channel; scalar fallback = 0)
 ///   - Tag 50717 / 0xC5BD  — WhiteLevel (scalar; default 65535 for 16-bit)
-///   - Tag 50721 / 0xC621  — ColorMatrix1 (XYZ D50 → camera; used to build
-///                           the camera → sRGB correction matrix)
+///   - Tag 50721 / 0xC621  — ColorMatrix1 (XYZ D50 → camera → sRGB correction matrix)
 ///   - BitsPerSample        — used to scale U8 data to 16-bit range
 ///
 /// After Malvar-He-Cutler Bayer demosaicing, the ColorMatrix1-derived
@@ -323,16 +370,22 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
     use tiff::tags::Tag;
 
     // DNG-specific tag numbers (not in the tiff crate's built-in Tag enum)
-    const TAG_CFA_PATTERN: u16 = 0x828D;    // 33422
+    const TAG_CFA_PATTERN: u16 = 0x828D; // 33422
     const TAG_BLACK_LEVEL_CORRECT: u16 = 0xC61A; // 50714
-    const TAG_WHITE_LEVEL: u16 = 0xC61D;    // 50717
-    // ColorMatrix1: XYZ (D50) → camera native RGB (9 SRational values, row-major)
-    const TAG_COLOR_MATRIX1: u16 = 0xC621;  // 50721
+    const TAG_WHITE_LEVEL: u16 = 0xC61D; // 50717
+                                         // ColorMatrix1: XYZ (D50) → camera native RGB (9 SRational values, row-major)
+    const TAG_COLOR_MATRIX1: u16 = 0xC621; // 50721
 
     let cursor = Cursor::new(dng);
     let mut decoder = Decoder::new(cursor).map_err(|e| format!("TIFF decode error: {e}"))?;
 
-    let (width, height) = decoder.dimensions().map_err(|e| format!("TIFF dimensions error: {e}"))?;
+    let (width, height) = decoder
+        .dimensions()
+        .map_err(|e| format!("TIFF dimensions error: {e}"))?;
+
+    // --- Dimension safety cap (Issue #11) ---
+    // Reject absurdly large images before any allocation to prevent OOM.
+    check_dng_dimensions(width, height)?;
 
     // --- Compression check ---
     // DngCreator.writeImage always produces uncompressed (type 1) strips.
@@ -347,17 +400,18 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
 
     match compression {
         1 => { /* uncompressed — continue */ }
-        6 => return Err(
-            "Compressed DNG (JPEG compression) not supported. \
-             Use uncompressed RAW capture or pre-process with a DNG SDK.".into()
-        ),
-        7 => return Err(
-            "Compressed DNG (lossless JPEG compression) not supported.".into()
-        ),
-        32946 | 8 => return Err(
-            "Compressed DNG (deflate compression) not supported.".into()
-        ),
-        other => return Err(format!("Unknown DNG compression type {other}; cannot decode.")),
+        6 => {
+            return Err("Compressed DNG (JPEG compression) not supported. \
+             Use uncompressed RAW capture or pre-process with a DNG SDK."
+                .into())
+        }
+        7 => return Err("Compressed DNG (lossless JPEG compression) not supported.".into()),
+        32946 | 8 => return Err("Compressed DNG (deflate compression) not supported.".into()),
+        other => {
+            return Err(format!(
+                "Unknown DNG compression type {other}; cannot decode."
+            ))
+        }
     }
 
     // --- BitsPerSample ---
@@ -383,17 +437,13 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
         .and_then(|v| v.into_f32_vec().ok())
         .filter(|v| v.len() >= 9)
         .and_then(|v| {
-            let m_xyz_to_cam = [
-                [v[0], v[1], v[2]],
-                [v[3], v[4], v[5]],
-                [v[6], v[7], v[8]],
-            ];
+            let m_xyz_to_cam = [[v[0], v[1], v[2]], [v[3], v[4], v[5]], [v[6], v[7], v[8]]];
             let m_cam_to_xyz = mat3_inverse(m_xyz_to_cam)?;
             // Bradford-adapted XYZ D50 → linear sRGB matrix
             let m_xyz_to_srgb = [
-                [ 3.1338561_f32, -1.6168667, -0.4906146],
-                [-0.9787684_f32,  1.9161415,  0.0334540],
-                [ 0.0719453_f32, -0.2289914,  1.4052427],
+                [3.133_856_f32, -1.616_867, -0.490_615],
+                [-0.978_768_f32, 1.916_142, 0.033_454],
+                [0.071_945_f32, -0.228_991, 1.405_243],
             ];
             Some(mat3_mul(m_xyz_to_srgb, m_cam_to_xyz))
         });
@@ -405,7 +455,13 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
         .ok()
         .flatten()
         .and_then(|v| v.into_u8_vec().ok())
-        .and_then(|v| if v.len() >= 4 { Some([v[0], v[1], v[2], v[3]]) } else { None })
+        .and_then(|v| {
+            if v.len() >= 4 {
+                Some([v[0], v[1], v[2], v[3]])
+            } else {
+                None
+            }
+        })
         .unwrap_or([0, 1, 1, 2]); // RGGB
 
     // --- BlackLevel (try correct tag, fall back to 0) ---
@@ -413,9 +469,7 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
         .find_tag(Tag::Unknown(TAG_BLACK_LEVEL_CORRECT))
         .ok()
         .flatten()
-        .and_then(|v| {
-            v.into_f32().ok().or_else(|| None)
-        })
+        .and_then(|v| v.into_f32().ok())
         .unwrap_or(0.0_f32);
 
     // --- WhiteLevel ---
@@ -434,14 +488,28 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
     }
 
     // --- Read RAW Bayer data ---
-    let raw_data = decoder.read_image().map_err(|e| format!("TIFF read error: {e}"))?;
+    let raw_data = decoder
+        .read_image()
+        .map_err(|e| format!("TIFF read error: {e}"))?;
 
     // Normalise every sample to [0.0, 1.0]
     let samples: Vec<f32> = match raw_data {
-        DecodingResult::U8(v)  => v.iter().map(|&x| (x as f32 - black_level) / scale).collect(),
-        DecodingResult::U16(v) => v.iter().map(|&x| (x as f32 - black_level) / scale).collect(),
-        DecodingResult::U32(v) => v.iter().map(|&x| (x as f32 - black_level) / scale).collect(),
-        DecodingResult::I16(v) => v.iter().map(|&x| (x as f32 - black_level) / scale).collect(),
+        DecodingResult::U8(v) => v
+            .iter()
+            .map(|&x| (x as f32 - black_level) / scale)
+            .collect(),
+        DecodingResult::U16(v) => v
+            .iter()
+            .map(|&x| (x as f32 - black_level) / scale)
+            .collect(),
+        DecodingResult::U32(v) => v
+            .iter()
+            .map(|&x| (x as f32 - black_level) / scale)
+            .collect(),
+        DecodingResult::I16(v) => v
+            .iter()
+            .map(|&x| (x as f32 - black_level) / scale)
+            .collect(),
         DecodingResult::F32(v) => v.iter().map(|&x| (x - black_level) / scale).collect(),
         _ => return Err("Unsupported DNG sample format".to_string()),
     };
@@ -452,7 +520,10 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
     if samples.len() < w * h {
         return Err(format!(
             "RAW data too short: got {} samples, expected {}x{}={}",
-            samples.len(), w, h, w * h
+            samples.len(),
+            w,
+            h,
+            w * h
         ));
     }
 
@@ -467,9 +538,7 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
         samples[r * w + c]
     };
     // Channel index at (row, col): 0=R, 1=G, 2=B
-    let ch = |row: usize, col: usize| -> usize {
-        cfa[(row % 2) * 2 + (col % 2)] as usize
-    };
+    let ch = |row: usize, col: usize| -> usize { cfa[(row % 2) * 2 + (col % 2)] as usize };
 
     // Pass 1: Green channel
     // At G sites: copy directly.
@@ -483,9 +552,10 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
             green[row * w + col] = if ch(row, col) == 1 {
                 bayer(r, c)
             } else {
-                ((2.0 * (bayer(r-1,c) + bayer(r+1,c) + bayer(r,c-1) + bayer(r,c+1))
-                  + 4.0 * bayer(r, c)
-                  - (bayer(r-2,c) + bayer(r+2,c) + bayer(r,c-2) + bayer(r,c+2))) / 8.0)
+                ((2.0 * (bayer(r - 1, c) + bayer(r + 1, c) + bayer(r, c - 1) + bayer(r, c + 1))
+                    + 4.0 * bayer(r, c)
+                    - (bayer(r - 2, c) + bayer(r + 2, c) + bayer(r, c - 2) + bayer(r, c + 2)))
+                    / 8.0)
                     .clamp(0.0, 1.0)
             };
         }
@@ -514,17 +584,20 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
                     let r_horiz = ch(row, col.wrapping_add(w).wrapping_sub(1) % w) == 0
                         || ch(row, (col + 1) % w) == 0;
                     let diff = if r_horiz {
-                        ((bayer(r,c-1) - g_at(r,c-1)) + (bayer(r,c+1) - g_at(r,c+1))) / 2.0
+                        ((bayer(r, c - 1) - g_at(r, c - 1)) + (bayer(r, c + 1) - g_at(r, c + 1)))
+                            / 2.0
                     } else {
-                        ((bayer(r-1,c) - g_at(r-1,c)) + (bayer(r+1,c) - g_at(r+1,c))) / 2.0
+                        ((bayer(r - 1, c) - g_at(r - 1, c)) + (bayer(r + 1, c) - g_at(r + 1, c)))
+                            / 2.0
                     };
                     (g_at(r, c) + diff).clamp(0.0, 1.0)
                 }
                 _ => {
-                    let diff = ((bayer(r-1,c-1) - g_at(r-1,c-1))
-                              + (bayer(r-1,c+1) - g_at(r-1,c+1))
-                              + (bayer(r+1,c-1) - g_at(r+1,c-1))
-                              + (bayer(r+1,c+1) - g_at(r+1,c+1))) / 4.0;
+                    let diff = ((bayer(r - 1, c - 1) - g_at(r - 1, c - 1))
+                        + (bayer(r - 1, c + 1) - g_at(r - 1, c + 1))
+                        + (bayer(r + 1, c - 1) - g_at(r + 1, c - 1))
+                        + (bayer(r + 1, c + 1) - g_at(r + 1, c + 1)))
+                        / 4.0;
                     (g_at(r, c) + diff).clamp(0.0, 1.0)
                 }
             };
@@ -544,17 +617,20 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
                     let b_horiz = ch(row, col.wrapping_add(w).wrapping_sub(1) % w) == 2
                         || ch(row, (col + 1) % w) == 2;
                     let diff = if b_horiz {
-                        ((bayer(r,c-1) - g_at(r,c-1)) + (bayer(r,c+1) - g_at(r,c+1))) / 2.0
+                        ((bayer(r, c - 1) - g_at(r, c - 1)) + (bayer(r, c + 1) - g_at(r, c + 1)))
+                            / 2.0
                     } else {
-                        ((bayer(r-1,c) - g_at(r-1,c)) + (bayer(r+1,c) - g_at(r+1,c))) / 2.0
+                        ((bayer(r - 1, c) - g_at(r - 1, c)) + (bayer(r + 1, c) - g_at(r + 1, c)))
+                            / 2.0
                     };
                     (g_at(r, c) + diff).clamp(0.0, 1.0)
                 }
                 _ => {
-                    let diff = ((bayer(r-1,c-1) - g_at(r-1,c-1))
-                              + (bayer(r-1,c+1) - g_at(r-1,c+1))
-                              + (bayer(r+1,c-1) - g_at(r+1,c-1))
-                              + (bayer(r+1,c+1) - g_at(r+1,c+1))) / 4.0;
+                    let diff = ((bayer(r - 1, c - 1) - g_at(r - 1, c - 1))
+                        + (bayer(r - 1, c + 1) - g_at(r - 1, c + 1))
+                        + (bayer(r + 1, c - 1) - g_at(r + 1, c - 1))
+                        + (bayer(r + 1, c + 1) - g_at(r + 1, c + 1)))
+                        / 4.0;
                     (g_at(r, c) + diff).clamp(0.0, 1.0)
                 }
             };
@@ -566,10 +642,10 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
     for i in 0..(w * h) {
         let (sr, sg, sb) = match cam_to_srgb {
             Some(m) => mat3_apply(m, red[i], green[i], blue[i]),
-            None    => (red[i], green[i], blue[i]),
+            None => (red[i], green[i], blue[i]),
         };
         let base = i * 3;
-        rgb[base]     = sr.clamp(0.0, 1.0);
+        rgb[base] = sr.clamp(0.0, 1.0);
         rgb[base + 1] = sg.clamp(0.0, 1.0);
         rgb[base + 2] = sb.clamp(0.0, 1.0);
     }
@@ -598,8 +674,7 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
 /// - `preset_key`  : preset identifier string (e.g. "KODAK_PORTRA_400")
 /// - `style_key`   : style identifier string  (e.g. "ACCURATE", "ARTISTIC")
 /// - `config_json` : JSON-encoded `SimulationConfig`
-/// - `model_path`  : absolute path to the depth model on-device, or empty
-///                   string to skip depth estimation
+/// - `model_path`  : absolute path to the depth model on-device, or empty string to skip depth estimation
 ///
 /// Returns a `ByteArray` where:
 ///   - Bytes 0–3: image width  as little-endian signed 32-bit integer
@@ -607,10 +682,9 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
 ///   - Bytes 8… : width×height×3 processed RGB bytes (R G B R G B …)
 ///
 /// Throws `java.lang.RuntimeException` on any failure.
+#[cfg(feature = "android")]
 #[no_mangle]
-pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_processRawDng<
-    'local,
->(
+pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_processRawDng<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     dng_bytes: JByteArray<'local>,
@@ -619,7 +693,14 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_proce
     config_json: JString<'local>,
     model_path: JString<'local>,
 ) -> jbyteArray {
-    match process_raw_dng_impl(&mut env, &dng_bytes, &preset_key, &style_key, &config_json, &model_path) {
+    match process_raw_dng_impl(
+        &mut env,
+        &dng_bytes,
+        &preset_key,
+        &style_key,
+        &config_json,
+        &model_path,
+    ) {
         Ok(arr) => arr,
         Err(e) => {
             let _ = env.throw_new("java/lang/RuntimeException", e.as_str());
@@ -637,12 +718,26 @@ fn process_raw_dng_impl<'local>(
     config_json: &JString<'local>,
     model_path: &JString<'local>,
 ) -> Result<jbyteArray, String> {
-    let preset_key: String = env.get_string(preset_key).map_err(|e| e.to_string())?.into();
+    let preset_key: String = env
+        .get_string(preset_key)
+        .map_err(|e| e.to_string())?
+        .into();
     let style_key: String = env.get_string(style_key).map_err(|e| e.to_string())?.into();
-    let config_json: String = env.get_string(config_json).map_err(|e| e.to_string())?.into();
-    let model_path_str: String = env.get_string(model_path).map_err(|e| e.to_string())?.into();
+    let config_json: String = env
+        .get_string(config_json)
+        .map_err(|e| e.to_string())?
+        .into();
+    let model_path_str: String = env
+        .get_string(model_path)
+        .map_err(|e| e.to_string())?
+        .into();
 
-    let dng = env.convert_byte_array(dng_bytes).map_err(|e| e.to_string())?;
+    let dng_len = env.get_array_length(dng_bytes).map_err(|e| e.to_string())?;
+    check_jni_array_len(dng_len)?;
+
+    let dng = env
+        .convert_byte_array(dng_bytes)
+        .map_err(|e| e.to_string())?;
 
     // Decode DNG → demosaiced + colour-corrected sRGB (with dimension header)
     let decoded = decode_dng_to_rgb(&dng)?;
@@ -651,22 +746,23 @@ fn process_raw_dng_impl<'local>(
     if decoded.len() < 8 {
         return Err("DNG decode returned too-short buffer".to_string());
     }
-    let width  = i32::from_le_bytes(decoded[0..4].try_into().unwrap()) as u32;
+    let width = i32::from_le_bytes(decoded[0..4].try_into().unwrap()) as u32;
     let height = i32::from_le_bytes(decoded[4..8].try_into().unwrap()) as u32;
     let rgb_bytes = &decoded[8..];
 
     // Build RgbImage for the filmr pipeline
-    let input: image::RgbImage =
-        ImageBuffer::from_raw(width, height, rgb_bytes.to_vec())
-            .ok_or_else(|| "Failed to build RgbImage from demosaiced data".to_string())?;
+    let input: image::RgbImage = ImageBuffer::from_raw(width, height, rgb_bytes.to_vec())
+        .ok_or_else(|| "Failed to build RgbImage from demosaiced data".to_string())?;
 
     let film = stock_by_key(&preset_key).with_style(style_from_str(&style_key));
-    let config: SimulationConfig = serde_json::from_str(&config_json).unwrap_or_default();
+    let config: SimulationConfig =
+        serde_json::from_str(&config_json).map_err(|e| format!("Invalid config JSON: {e}"))?;
 
     // Attempt depth estimation when the feature is compiled in and a model path is given
     let depth_map = estimate_depth_if_available(&input, &model_path_str, &config);
 
-    let output = crate::processor::process_image_with_depth(&input, &film, &config, depth_map.as_ref());
+    let output =
+        crate::processor::process_image_with_depth(&input, &film, &config, depth_map.as_ref());
     let output_rgb = output.into_raw(); // width×height×3
 
     // Re-pack with dimension header so Kotlin knows the size
@@ -682,6 +778,7 @@ fn process_raw_dng_impl<'local>(
 
 /// Returns 1 (true) if the library was compiled with the `depth` feature
 /// (Depth Anything V2 monocular depth estimation).
+#[cfg(feature = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_isDepthSupported<
     'local,
@@ -690,9 +787,13 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_isDep
     _class: JClass<'local>,
 ) -> jni::sys::jboolean {
     #[cfg(feature = "depth")]
-    { 1u8 }
+    {
+        1u8
+    }
     #[cfg(not(feature = "depth"))]
-    { 0u8 }
+    {
+        0u8
+    }
 }
 
 /// Process an image with depth-guided DOF and object-motion effects.
@@ -708,6 +809,7 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_isDep
 ///
 /// On any depth-estimation error the function falls back to depth-less processing
 /// rather than failing.
+#[cfg(feature = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_processImageWithDepth<
     'local,
@@ -740,6 +842,8 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_proce
     }
 }
 
+#[cfg(feature = "android")]
+#[allow(clippy::too_many_arguments)]
 fn process_with_depth_impl<'local>(
     env: &mut JNIEnv<'local>,
     rgba_bytes: &JByteArray<'local>,
@@ -750,25 +854,46 @@ fn process_with_depth_impl<'local>(
     config_json: &JString<'local>,
     model_path: &JString<'local>,
 ) -> Result<jbyteArray, String> {
-    let preset_key: String = env.get_string(preset_key).map_err(|e| e.to_string())?.into();
+    let preset_key: String = env
+        .get_string(preset_key)
+        .map_err(|e| e.to_string())?
+        .into();
     let style_key: String = env.get_string(style_key).map_err(|e| e.to_string())?.into();
-    let config_json: String = env.get_string(config_json).map_err(|e| e.to_string())?.into();
-    let model_path_str: String = env.get_string(model_path).map_err(|e| e.to_string())?.into();
+    let config_json: String = env
+        .get_string(config_json)
+        .map_err(|e| e.to_string())?
+        .into();
+    let model_path_str: String = env
+        .get_string(model_path)
+        .map_err(|e| e.to_string())?
+        .into();
 
-    let rgba = env.convert_byte_array(rgba_bytes).map_err(|e| e.to_string())?;
+    check_jni_array_len(width)?;
+    check_jni_array_len(height)?;
+
+    let array_len = env
+        .get_array_length(rgba_bytes)
+        .map_err(|e| e.to_string())?;
+    check_jni_array_len(array_len)?;
+
+    let rgba = env
+        .convert_byte_array(rgba_bytes)
+        .map_err(|e| e.to_string())?;
 
     let w = width as u32;
     let h = height as u32;
-    let input = rgba_to_rgb_image(&rgba, w, h)
-        .ok_or_else(|| "Invalid image dimensions".to_string())?;
+    let input =
+        rgba_to_rgb_image(&rgba, w, h).ok_or_else(|| "Invalid image dimensions".to_string())?;
 
     let film = stock_by_key(&preset_key).with_style(style_from_str(&style_key));
-    let config: SimulationConfig = serde_json::from_str(&config_json).unwrap_or_default();
+    let config: SimulationConfig =
+        serde_json::from_str(&config_json).map_err(|e| format!("Invalid config JSON: {e}"))?;
 
     // Attempt depth estimation when the feature is compiled in and a model path is given
     let depth_map = estimate_depth_if_available(&input, &model_path_str, &config);
 
-    let output = crate::processor::process_image_with_depth(&input, &film, &config, depth_map.as_ref());
+    let output =
+        crate::processor::process_image_with_depth(&input, &film, &config, depth_map.as_ref());
     let output_bytes = output.into_raw();
 
     env.byte_array_from_slice(&output_bytes)
@@ -777,6 +902,7 @@ fn process_with_depth_impl<'local>(
 }
 
 /// Run depth estimation only when the feature and model are available and relevant.
+#[cfg(feature = "android")]
 fn estimate_depth_if_available(
     image: &image::RgbImage,
     model_path: &str,
@@ -805,5 +931,91 @@ fn estimate_depth_if_available(
     {
         let _ = (image, model_path);
         None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — no JVM required
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- MAX_SAFE_JNI_ARRAY_LEN ---
+
+    #[test]
+    fn max_safe_jni_array_len_is_256_mb() {
+        assert_eq!(MAX_SAFE_JNI_ARRAY_LEN, 256 * 1024 * 1024);
+    }
+
+    // --- check_jni_array_len ---
+
+    #[test]
+    fn jni_array_len_negative_is_error() {
+        let result = check_jni_array_len(-1);
+        assert!(result.is_err(), "negative length must be rejected");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("-1"),
+            "error message should contain the bad value, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn jni_array_len_exceeds_max_is_error() {
+        let too_large = (MAX_SAFE_JNI_ARRAY_LEN + 1) as i32;
+        // Only test when the cast doesn't overflow i32 (it won't: 256 MB + 1 < i32::MAX)
+        if too_large > 0 {
+            let result = check_jni_array_len(too_large);
+            assert!(
+                result.is_err(),
+                "length above MAX_SAFE_JNI_ARRAY_LEN must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn jni_array_len_at_max_is_ok() {
+        // MAX_SAFE_JNI_ARRAY_LEN fits in i32 only when ≤ i32::MAX; use a known-safe value.
+        let valid_len: i32 = 1024;
+        let result = check_jni_array_len(valid_len);
+        assert_eq!(result, Ok(1024usize));
+    }
+
+    #[test]
+    fn jni_array_len_zero_is_ok() {
+        assert_eq!(check_jni_array_len(0), Ok(0usize));
+    }
+
+    // --- check_dng_dimensions (MAX_DNG_DIM guard, Issue #11) ---
+
+    #[test]
+    fn dng_dimensions_within_limit_accepted() {
+        assert!(check_dng_dimensions(1920, 1080).is_ok());
+        assert!(check_dng_dimensions(16384, 16384).is_ok());
+        assert!(check_dng_dimensions(1, 1).is_ok());
+    }
+
+    #[test]
+    fn dng_dimensions_oversized_width_rejected() {
+        let result = check_dng_dimensions(16385, 100);
+        assert!(result.is_err(), "width > 16384 must be rejected");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("16385"),
+            "error should mention the oversized dimension, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn dng_dimensions_oversized_height_rejected() {
+        let result = check_dng_dimensions(100, 16385);
+        assert!(result.is_err(), "height > 16384 must be rejected");
+    }
+
+    #[test]
+    fn dng_dimensions_both_oversized_rejected() {
+        assert!(check_dng_dimensions(20000, 20000).is_err());
     }
 }
