@@ -102,55 +102,63 @@ fn vertical_blur_pass(
     let weight = 1.0 / (2.0 * radius as f32 + 1.0);
     let weight_vec = f32x4::splat(weight);
 
-    // Send raw pointer address to threads as usize (safe to share)
-    let dst_ptr_addr = dst.as_mut_ptr() as usize;
+    // Compute each column independently into a temporary buffer, then copy
+    // into `dst`. This avoids any unsafe raw-pointer aliasing while still
+    // allowing full parallelism across columns.
+    let columns: Vec<Vec<f32>> = (0..width)
+        .into_par_iter()
+        .map(|x| {
+            let mut col = Vec::with_capacity((height as usize) * 3);
 
-    // Parallelize by columns
-    (0..width).into_par_iter().for_each(|x| {
-        // Reconstruct pointer locally
-        let dst_ptr = dst_ptr_addr as *mut f32;
-        // Safety: We only write to indices corresponding to column x.
-        // Different threads handle different x, so indices are disjoint.
-        let dst_slice =
-            unsafe { std::slice::from_raw_parts_mut(dst_ptr, (width * height * 3) as usize) };
+            let mut sum_r = 0.0_f32;
+            let mut sum_g = 0.0_f32;
+            let mut sum_b = 0.0_f32;
 
-        let mut sum_r = 0.0;
-        let mut sum_g = 0.0;
-        let mut sum_b = 0.0;
+            let p0 = src.get_pixel(x, 0).0;
+            sum_r += p0[0] * (r as f32);
+            sum_g += p0[1] * (r as f32);
+            sum_b += p0[2] * (r as f32);
 
-        let p0 = src.get_pixel(x, 0).0;
-        sum_r += p0[0] * (r as f32);
-        sum_g += p0[1] * (r as f32);
-        sum_b += p0[2] * (r as f32);
+            for y in 0..=r {
+                let py = src.get_pixel(x, y.min((height - 1) as i32) as u32).0;
+                sum_r += py[0];
+                sum_g += py[1];
+                sum_b += py[2];
+            }
 
-        for y in 0..=r {
-            let py = src.get_pixel(x, y.min((height - 1) as i32) as u32).0;
-            sum_r += py[0];
-            sum_g += py[1];
-            sum_b += py[2];
+            let mut sum_vec = f32x4::from([sum_r, sum_g, sum_b, 0.0]);
+
+            for y in 0..height {
+                let avg = sum_vec * weight_vec;
+                let avg_arr: [f32; 4] = avg.into();
+                col.push(avg_arr[0]);
+                col.push(avg_arr[1]);
+                col.push(avg_arr[2]);
+
+                let out_y = (y as i32 - r).max(0) as u32;
+                let in_y = (y as i32 + r + 1).min((height - 1) as i32) as u32;
+
+                let p_out = src.get_pixel(x, out_y).0;
+                let p_in = src.get_pixel(x, in_y).0;
+
+                let v_out = f32x4::from([p_out[0], p_out[1], p_out[2], 0.0]);
+                let v_in = f32x4::from([p_in[0], p_in[1], p_in[2], 0.0]);
+
+                sum_vec += v_in - v_out;
+            }
+
+            col
+        })
+        .collect();
+
+    // Copy computed column data back into `dst` (single-threaded, no unsafe).
+    for (x, col) in columns.into_iter().enumerate() {
+        for y in 0..height as usize {
+            let idx = y * 3;
+            let pixel = dst.get_pixel_mut(x as u32, y as u32);
+            pixel[0] = col[idx];
+            pixel[1] = col[idx + 1];
+            pixel[2] = col[idx + 2];
         }
-
-        let mut sum_vec = f32x4::from([sum_r, sum_g, sum_b, 0.0]);
-
-        for y in 0..height {
-            let avg = sum_vec * weight_vec;
-            let avg_arr: [f32; 4] = avg.into();
-
-            let idx = ((y as usize) * (width as usize) + (x as usize)) * 3;
-            dst_slice[idx] = avg_arr[0];
-            dst_slice[idx + 1] = avg_arr[1];
-            dst_slice[idx + 2] = avg_arr[2];
-
-            let out_y = (y as i32 - r).max(0) as u32;
-            let in_y = (y as i32 + r + 1).min((height - 1) as i32) as u32;
-
-            let p_out = src.get_pixel(x, out_y).0;
-            let p_in = src.get_pixel(x, in_y).0;
-
-            let v_out = f32x4::from([p_out[0], p_out[1], p_out[2], 0.0]);
-            let v_in = f32x4::from([p_in[0], p_in[1], p_in[2], 0.0]);
-
-            sum_vec += v_in - v_out;
-        }
-    });
+    }
 }

@@ -350,6 +350,16 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
 
     let (width, height) = decoder.dimensions().map_err(|e| format!("TIFF dimensions error: {e}"))?;
 
+    // --- Dimension safety cap (Issue #11) ---
+    // Reject absurdly large images before any allocation to prevent OOM.
+    const MAX_DNG_DIM: u32 = 16384;
+    if width > MAX_DNG_DIM || height > MAX_DNG_DIM {
+        return Err(format!(
+            "DNG dimensions {}x{} exceed maximum {}x{}",
+            width, height, MAX_DNG_DIM, MAX_DNG_DIM
+        ));
+    }
+
     // --- Compression check ---
     // DngCreator.writeImage always produces uncompressed (type 1) strips.
     // Some third-party DNG files use JPEG (6), lossless-JPEG (7), or deflate (8/32946).

@@ -514,9 +514,18 @@ fn boost_color_matrix(matrix: [[f32; 3]; 3], factor: f32) -> [[f32; 3]; 3] {
     result
 }
 
-/// Reduce color saturation by moving matrix towards grayscale
+/// Reduce color saturation by moving matrix towards a perceptually-correct
+/// grayscale using Rec. 709 luma coefficients (0.2126 R, 0.7152 G, 0.0722 B).
+///
+/// Equal-weight mixing (0.33 each) was incorrect; it produced a luminance
+/// mismatch that made desaturated output look too red/blue.
 fn reduce_saturation(matrix: [[f32; 3]; 3], amount: f32) -> [[f32; 3]; 3] {
-    let gray = [[0.33, 0.33, 0.33], [0.33, 0.33, 0.33], [0.33, 0.33, 0.33]];
+    // Rec. 709 luma row: luma = 0.2126*R + 0.7152*G + 0.0722*B
+    let gray = [
+        [0.2126_f32, 0.7152, 0.0722],
+        [0.2126_f32, 0.7152, 0.0722],
+        [0.2126_f32, 0.7152, 0.0722],
+    ];
     let mut result = matrix;
     for i in 0..3 {
         for j in 0..3 {
