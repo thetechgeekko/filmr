@@ -73,6 +73,10 @@ jobs:
 
       - name: Build WASM App
         working-directory: apps/filmr
+        env:
+          # wasm-bindgen-rayon requires atomics + bulk-memory + mutable-globals
+          # so the WASM binary has the __heap_base symbol for thread injection
+          RUSTFLAGS: -C target-feature=+atomics,+bulk-memory,+mutable-globals
         run: trunk build --release --public-url /web/
 
       # --- Oranda Build Steps ---
