@@ -265,7 +265,7 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getAv
         .iter()
         .map(|s| {
             format!(
-                r#"{{"manufacturer":"{}","name":"{}","iso":{}}}",
+                r#"{{"manufacturer":"{}","name":"{}","iso":{}}}"#,
                 s.manufacturer, s.name, s.iso as u32
             )
         })
