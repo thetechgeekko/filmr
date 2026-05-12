@@ -48,10 +48,20 @@ pub const MODEL_URL: &str =
     "https://github.com/W-Mai/filmr/releases/download/models-v1/depth_anything_v2_vits.rten";
 pub const MODEL_SIZE: u64 = 99_060_839; // ~95MB
 
+/// Expected SHA-256 hex digest of the downloaded model file.
+/// Leave empty to skip verification (e.g. during development).
+/// Fill in after verifying the model once with `sha256sum`.
+const EXPECTED_MODEL_SHA256: &str = ""; // TODO: fill in after verifying model
+
 /// Download the depth model with progress callback.
 /// `on_progress(downloaded_bytes, total_bytes)` called periodically.
+///
+/// After downloading, the SHA-256 digest is verified against
+/// `EXPECTED_MODEL_SHA256` (when non-empty). The temporary file is removed
+/// on any error to avoid leaving partial or corrupt data on disk.
 #[cfg(feature = "depth")]
 pub fn download_model(on_progress: impl Fn(u64, u64)) -> Result<(), Box<dyn std::error::Error>> {
+    use sha2::{Digest, Sha256};
     use std::io::Read;
     let dir = default_model_dir();
     std::fs::create_dir_all(&dir)?;
@@ -68,20 +78,43 @@ pub fn download_model(on_progress: impl Fn(u64, u64)) -> Result<(), Box<dyn std:
     let tmp = dir.join("depth_anything_v2_vits.rten.tmp");
     let mut file = std::fs::File::create(&tmp)?;
 
+    let mut hasher = Sha256::new();
     let mut downloaded = 0u64;
     let mut buf = [0u8; 65536];
-    loop {
-        let n = reader.read(&mut buf)?;
-        if n == 0 {
-            break;
+    let result: Result<(), Box<dyn std::error::Error>> = (|| {
+        loop {
+            let n = reader.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            std::io::Write::write_all(&mut file, &buf[..n])?;
+            hasher.update(&buf[..n]);
+            downloaded += n as u64;
+            on_progress(downloaded, total);
         }
-        std::io::Write::write_all(&mut file, &buf[..n])?;
-        downloaded += n as u64;
-        on_progress(downloaded, total);
+
+        // Integrity check: compare SHA-256 if a reference digest is provided.
+        if !EXPECTED_MODEL_SHA256.is_empty() {
+            let digest = format!("{:x}", hasher.finalize());
+            if digest != EXPECTED_MODEL_SHA256 {
+                return Err(format!(
+                    "model integrity check failed: expected {}, got {}",
+                    EXPECTED_MODEL_SHA256, digest
+                )
+                .into());
+            }
+        }
+
+        std::fs::rename(&tmp, default_model_path())?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        // Clean up the temp file on any download or verification error.
+        let _ = std::fs::remove_file(&tmp);
     }
 
-    std::fs::rename(&tmp, default_model_path())?;
-    Ok(())
+    result
 }
 
 /// Delete the depth model.

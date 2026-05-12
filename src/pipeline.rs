@@ -1,6 +1,6 @@
 use crate::film::{FilmStock, FilmType};
 use crate::physics;
-use crate::processor::{OutputMode, SimulationConfig, WhiteBalanceMode};
+use crate::processor::{OutputMode, SimulationConfig};
 use crate::utils;
 use image::{ImageBuffer, Rgb, RgbImage};
 use rayon::prelude::*;
@@ -771,6 +771,71 @@ fn sample_channel(src: &[f32], w: usize, h: usize, x: f32, y: f32, ch: usize) ->
         + src[i11] * fx * fy
 }
 
+// ---------------------------------------------------------------------------
+// Shared white-balance helper (used by both DevelopStage and AccurateDevelopStage)
+// ---------------------------------------------------------------------------
+
+/// Compute per-channel white-balance gains from an exposure-space image.
+///
+/// `exposure_vals_iter` yields `[f32; 3]` exposure values for each sampled
+/// pixel.  The returned `[f32; 3]` are multiplicative gains `[r, g, b]`.
+pub fn compute_wb_gains(
+    config: &crate::processor::SimulationConfig,
+    exposure_avg: [f32; 3],
+) -> [f32; 3] {
+    match config.white_balance_mode {
+        crate::processor::WhiteBalanceMode::Auto => {
+            let [avg_r, avg_g, avg_b] = exposure_avg;
+            let total = avg_r + avg_g + avg_b;
+            if total > 0.0 {
+                let lum = total / 3.0;
+                let eps = 1e-9f32;
+                let s = config.white_balance_strength.clamp(0.0, 1.0);
+                let warmth = config.warmth.clamp(-1.0, 1.0);
+                [
+                    (1.0 + (lum / avg_r.max(eps) - 1.0) * s) * (1.0 + warmth * 0.1),
+                    1.0 + (lum / avg_g.max(eps) - 1.0) * s,
+                    (1.0 + (lum / avg_b.max(eps) - 1.0) * s) * (1.0 - warmth * 0.1),
+                ]
+            } else {
+                [1.0, 1.0, 1.0]
+            }
+        }
+        _ => {
+            let warmth = config.warmth.clamp(-1.0, 1.0);
+            [1.0 + warmth * 0.1, 1.0, 1.0 - warmth * 0.1]
+        }
+    }
+}
+
+/// Sample the average per-channel exposure from an image buffer (subsampled).
+pub fn sample_exposure_average(
+    image: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    apply_matrix: impl Fn(f32, f32, f32) -> [f32; 3] + Sync,
+) -> [f32; 3] {
+    let width = image.width();
+    let height = image.height();
+    let step = ((width * height / 1000).max(1)) as usize;
+    let mut sum_r = 0.0f32;
+    let mut sum_g = 0.0f32;
+    let mut sum_b = 0.0f32;
+    let mut count = 0.0f32;
+    for (i, pixel) in image.chunks(3).enumerate() {
+        if i % step == 0 {
+            let ev = apply_matrix(pixel[0], pixel[1], pixel[2]);
+            sum_r += ev[0];
+            sum_g += ev[1];
+            sum_b += ev[2];
+            count += 1.0;
+        }
+    }
+    if count > 0.0 {
+        [sum_r / count, sum_g / count, sum_b / count]
+    } else {
+        [1.0, 1.0, 1.0]
+    }
+}
+
 /// # Develop Stage
 ///
 /// The core physical simulation:
@@ -810,63 +875,9 @@ impl PipelineStage for DevelopStage {
         };
         let t_eff = config.exposure_time / reciprocity_factor;
 
-        // White Balance Calculation
-        let wb_gains = match config.white_balance_mode {
-            WhiteBalanceMode::Auto => {
-                let step = (width * height / 1000).max(1);
-                let mut sum_r = 0.0;
-                let mut sum_g = 0.0;
-                let mut sum_b = 0.0;
-                let mut count = 0.0;
-
-                for i in (0..(width * height)).step_by(step as usize) {
-                    let x = i % width;
-                    let y = i / width;
-                    let p = image.get_pixel(x, y).0;
-
-                    let exposure_vals = apply_matrix(p[0], p[1], p[2]);
-
-                    sum_r += exposure_vals[0];
-                    sum_g += exposure_vals[1];
-                    sum_b += exposure_vals[2];
-                    count += 1.0;
-                }
-
-                if count > 0.0 {
-                    let avg_r = sum_r / count;
-                    let avg_g = sum_g / count;
-                    let avg_b = sum_b / count;
-                    let lum = (avg_r + avg_g + avg_b) / 3.0;
-                    let eps = 1e-9;
-
-                    let gain_r = lum / avg_r.max(eps);
-                    let gain_g = lum / avg_g.max(eps);
-                    let gain_b = lum / avg_b.max(eps);
-
-                    let s = config.white_balance_strength.clamp(0.0, 1.0);
-                    let base_gains = [
-                        1.0 + (gain_r - 1.0) * s,
-                        1.0 + (gain_g - 1.0) * s,
-                        1.0 + (gain_b - 1.0) * s,
-                    ];
-
-                    // Apply Warmth (Shift R/B)
-                    let warmth = config.warmth.clamp(-1.0, 1.0);
-                    [
-                        base_gains[0] * (1.0 + warmth * 0.1),
-                        base_gains[1],
-                        base_gains[2] * (1.0 - warmth * 0.1),
-                    ]
-                } else {
-                    [1.0, 1.0, 1.0]
-                }
-            }
-            _ => {
-                // Manual/Off mode still supports Warmth
-                let warmth = config.warmth.clamp(-1.0, 1.0);
-                [1.0 + warmth * 0.1, 1.0, 1.0 - warmth * 0.1]
-            }
-        };
+        // White Balance Calculation — shared helper keeps logic in sync with AccurateDevelopStage.
+        let exposure_avg = sample_exposure_average(image, |r, g, b| apply_matrix(r, g, b));
+        let wb_gains = compute_wb_gains(config, exposure_avg);
 
         // Transform in place: Linear -> Density
         image.par_chunks_mut(3).enumerate().for_each(|(i, pixel)| {

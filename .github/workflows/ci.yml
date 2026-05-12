@@ -38,6 +38,11 @@ jobs:
       - name: cargo test
         run: cargo test
 
+      - name: Security audit
+        run: |
+          cargo install cargo-audit --locked 2>/dev/null || true
+          cargo audit
+
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
 

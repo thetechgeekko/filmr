@@ -45,12 +45,13 @@ rten = { version = "0.15", optional = true }
 rten-tensor = { version = "0.15", optional = true }
 ureq = { version = "3", optional = true }
 dirs-next = { version = "2", optional = true }
+sha2 = { version = "0.10", optional = true }
 
 [features]
 default = []
 gpu = ["dep:wgpu", "dep:pollster"]
 compute-gpu = ["dep:wgpu", "dep:pollster"]
-depth = ["dep:rten", "dep:rten-tensor", "dep:ureq", "dep:dirs-next"]
+depth = ["dep:rten", "dep:rten-tensor", "dep:ureq", "dep:dirs-next", "dep:sha2"]
 android = ["dep:jni", "dep:tiff"]
 
 [dev-dependencies]
