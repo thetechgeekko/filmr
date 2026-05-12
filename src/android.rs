@@ -13,6 +13,8 @@ use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jbyteArray, jint, jstring};
 use jni::JNIEnv;
 
+const MAX_SAFE_JNI_ARRAY_LEN: usize = 256 * 1024 * 1024; // 256 MB
+
 // ---------------------------------------------------------------------------
 // Preset lookup
 // ---------------------------------------------------------------------------
@@ -228,6 +230,20 @@ fn process_image_impl<'local>(
         .map_err(|e| e.to_string())?
         .into();
 
+    if width < 0 || width as usize > MAX_SAFE_JNI_ARRAY_LEN {
+        return Err(format!("Invalid width: {}", width));
+    }
+    if height < 0 || height as usize > MAX_SAFE_JNI_ARRAY_LEN {
+        return Err(format!("Invalid height: {}", height));
+    }
+
+    let array_len = env
+        .get_array_length(rgba_bytes)
+        .map_err(|e| e.to_string())?;
+    if array_len < 0 || array_len as usize > MAX_SAFE_JNI_ARRAY_LEN {
+        return Err(format!("rgba_bytes array length out of bounds: {}", array_len));
+    }
+
     let rgba = env
         .convert_byte_array(rgba_bytes)
         .map_err(|e| e.to_string())?;
@@ -240,7 +256,7 @@ fn process_image_impl<'local>(
     let film = stock_by_key(&preset_key).with_style(style_from_str(&style_key));
 
     let config: SimulationConfig =
-        serde_json::from_str(&config_json).unwrap_or_default();
+        serde_json::from_str(&config_json).map_err(|e| format!("Invalid config JSON: {e}"))?;
 
     let output = process_image(&input, &film, &config);
     let output_bytes = output.into_raw();
@@ -265,7 +281,7 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getAv
         .iter()
         .map(|s| {
             format!(
-                r#"{{"manufacturer":"{}","name":"{}","iso":{}}}",
+                r#"{{"manufacturer":"{}","name":"{}","iso":{}}}"#,
                 s.manufacturer, s.name, s.iso as u32
             )
         })
@@ -642,6 +658,13 @@ fn process_raw_dng_impl<'local>(
     let config_json: String = env.get_string(config_json).map_err(|e| e.to_string())?.into();
     let model_path_str: String = env.get_string(model_path).map_err(|e| e.to_string())?.into();
 
+    let dng_len = env
+        .get_array_length(dng_bytes)
+        .map_err(|e| e.to_string())?;
+    if dng_len < 0 || dng_len as usize > MAX_SAFE_JNI_ARRAY_LEN {
+        return Err(format!("dng_bytes array length out of bounds: {}", dng_len));
+    }
+
     let dng = env.convert_byte_array(dng_bytes).map_err(|e| e.to_string())?;
 
     // Decode DNG → demosaiced + colour-corrected sRGB (with dimension header)
@@ -661,7 +684,7 @@ fn process_raw_dng_impl<'local>(
             .ok_or_else(|| "Failed to build RgbImage from demosaiced data".to_string())?;
 
     let film = stock_by_key(&preset_key).with_style(style_from_str(&style_key));
-    let config: SimulationConfig = serde_json::from_str(&config_json).unwrap_or_default();
+    let config: SimulationConfig = serde_json::from_str(&config_json).map_err(|e| format!("Invalid config JSON: {e}"))?;
 
     // Attempt depth estimation when the feature is compiled in and a model path is given
     let depth_map = estimate_depth_if_available(&input, &model_path_str, &config);
@@ -755,6 +778,20 @@ fn process_with_depth_impl<'local>(
     let config_json: String = env.get_string(config_json).map_err(|e| e.to_string())?.into();
     let model_path_str: String = env.get_string(model_path).map_err(|e| e.to_string())?.into();
 
+    if width < 0 || width as usize > MAX_SAFE_JNI_ARRAY_LEN {
+        return Err(format!("Invalid width: {}", width));
+    }
+    if height < 0 || height as usize > MAX_SAFE_JNI_ARRAY_LEN {
+        return Err(format!("Invalid height: {}", height));
+    }
+
+    let array_len = env
+        .get_array_length(rgba_bytes)
+        .map_err(|e| e.to_string())?;
+    if array_len < 0 || array_len as usize > MAX_SAFE_JNI_ARRAY_LEN {
+        return Err(format!("rgba_bytes array length out of bounds: {}", array_len));
+    }
+
     let rgba = env.convert_byte_array(rgba_bytes).map_err(|e| e.to_string())?;
 
     let w = width as u32;
@@ -763,7 +800,7 @@ fn process_with_depth_impl<'local>(
         .ok_or_else(|| "Invalid image dimensions".to_string())?;
 
     let film = stock_by_key(&preset_key).with_style(style_from_str(&style_key));
-    let config: SimulationConfig = serde_json::from_str(&config_json).unwrap_or_default();
+    let config: SimulationConfig = serde_json::from_str(&config_json).map_err(|e| format!("Invalid config JSON: {e}"))?;
 
     // Attempt depth estimation when the feature is compiled in and a model path is given
     let depth_map = estimate_depth_if_available(&input, &model_path_str, &config);
