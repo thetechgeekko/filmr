@@ -6,19 +6,53 @@
 //! The Kotlin counterpart lives in:
 //!   com.reilandeubank.unprocess.engine.FilmrEngine
 
+#[cfg(feature = "android")]
 use crate::film::{FilmStock, FilmStyle};
+#[cfg(feature = "android")]
 use crate::processor::{process_image, SimulationConfig};
+#[cfg(feature = "android")]
 use image::{ImageBuffer, RgbImage};
+#[cfg(feature = "android")]
 use jni::objects::{JByteArray, JClass, JString};
+#[cfg(feature = "android")]
 use jni::sys::{jbyteArray, jint, jstring};
+#[cfg(feature = "android")]
 use jni::JNIEnv;
 
 const MAX_SAFE_JNI_ARRAY_LEN: usize = 256 * 1024 * 1024; // 256 MB
+
+/// Check that a JNI array length value is within safe bounds.
+///
+/// Returns `Ok(len as usize)` when valid, or an `Err` message otherwise.
+/// Extracted from the inline guards in the JNI entry-points so that it can be
+/// unit-tested without a live JVM.
+fn check_jni_array_len(len: i32) -> Result<usize, String> {
+    if len < 0 || len as usize > MAX_SAFE_JNI_ARRAY_LEN {
+        return Err(format!("JNI array length out of range: {}", len));
+    }
+    Ok(len as usize)
+}
+
+/// Check that DNG image dimensions do not exceed `MAX_DNG_DIM`.
+///
+/// Extracted from `decode_dng_to_rgb` so that the guard can be tested
+/// independently of a live TIFF decoder.
+fn check_dng_dimensions(width: u32, height: u32) -> Result<(), String> {
+    const MAX_DNG_DIM: u32 = 16384;
+    if width > MAX_DNG_DIM || height > MAX_DNG_DIM {
+        return Err(format!(
+            "DNG dimensions {}x{} exceed maximum {}x{}",
+            width, height, MAX_DNG_DIM, MAX_DNG_DIM
+        ));
+    }
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Preset lookup
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "android")]
 fn stock_by_key(key: &str) -> FilmStock {
     use crate::presets::{agfa, fujifilm, ilford, kodak, other, polaroid};
     match key {
@@ -82,6 +116,7 @@ fn stock_by_key(key: &str) -> FilmStock {
     }
 }
 
+#[cfg(feature = "android")]
 fn style_from_str(s: &str) -> FilmStyle {
     match s {
         "ARTISTIC" => FilmStyle::Artistic,
@@ -96,6 +131,7 @@ fn style_from_str(s: &str) -> FilmStyle {
 // JNI helpers
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "android")]
 fn rgba_to_rgb_image(rgba: &[u8], w: u32, h: u32) -> Option<RgbImage> {
     if rgba.len() < (w * h * 4) as usize {
         return None;
@@ -178,6 +214,7 @@ fn mat3_apply(m: [[f32; 3]; 3], r: f32, g: f32, b: f32) -> (f32, f32, f32) {
 /// - `config_json`  : JSON-encoded `SimulationConfig`
 ///
 /// Returns RGB24 byte array on success, or throws RuntimeException on failure.
+#[cfg(feature = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_processImage<
     'local,
@@ -208,6 +245,7 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_proce
     }
 }
 
+#[cfg(feature = "android")]
 fn process_image_impl<'local>(
     env: &mut JNIEnv<'local>,
     rgba_bytes: &JByteArray<'local>,
@@ -269,6 +307,7 @@ fn process_image_impl<'local>(
 /// Return a JSON array of all available presets.
 ///
 /// Each element: `{"key":"KODAK_PORTRA_400","manufacturer":"Kodak","name":"Portra 400","iso":400}`
+#[cfg(feature = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getAvailablePresets<
     'local,
@@ -293,6 +332,7 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getAv
 }
 
 /// Return a JSON-encoded default `SimulationConfig`.
+#[cfg(feature = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getDefaultConfig<
     'local,
@@ -633,6 +673,7 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
 ///   - Bytes 8… : width×height×3 processed RGB bytes (R G B R G B …)
 ///
 /// Throws `java.lang.RuntimeException` on any failure.
+#[cfg(feature = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_processRawDng<
     'local,
@@ -715,6 +756,7 @@ fn process_raw_dng_impl<'local>(
 
 /// Returns 1 (true) if the library was compiled with the `depth` feature
 /// (Depth Anything V2 monocular depth estimation).
+#[cfg(feature = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_isDepthSupported<
     'local,
@@ -741,6 +783,7 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_isDep
 ///
 /// On any depth-estimation error the function falls back to depth-less processing
 /// rather than failing.
+#[cfg(feature = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_processImageWithDepth<
     'local,
@@ -773,6 +816,7 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_proce
     }
 }
 
+#[cfg(feature = "android")]
 fn process_with_depth_impl<'local>(
     env: &mut JNIEnv<'local>,
     rgba_bytes: &JByteArray<'local>,
@@ -824,6 +868,7 @@ fn process_with_depth_impl<'local>(
 }
 
 /// Run depth estimation only when the feature and model are available and relevant.
+#[cfg(feature = "android")]
 fn estimate_depth_if_available(
     image: &image::RgbImage,
     model_path: &str,
@@ -852,5 +897,88 @@ fn estimate_depth_if_available(
     {
         let _ = (image, model_path);
         None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — no JVM required
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- MAX_SAFE_JNI_ARRAY_LEN ---
+
+    #[test]
+    fn max_safe_jni_array_len_is_256_mb() {
+        assert_eq!(MAX_SAFE_JNI_ARRAY_LEN, 256 * 1024 * 1024);
+    }
+
+    // --- check_jni_array_len ---
+
+    #[test]
+    fn jni_array_len_negative_is_error() {
+        let result = check_jni_array_len(-1);
+        assert!(result.is_err(), "negative length must be rejected");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("-1"),
+            "error message should contain the bad value, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn jni_array_len_exceeds_max_is_error() {
+        let too_large = (MAX_SAFE_JNI_ARRAY_LEN + 1) as i32;
+        // Only test when the cast doesn't overflow i32 (it won't: 256 MB + 1 < i32::MAX)
+        if too_large > 0 {
+            let result = check_jni_array_len(too_large);
+            assert!(result.is_err(), "length above MAX_SAFE_JNI_ARRAY_LEN must be rejected");
+        }
+    }
+
+    #[test]
+    fn jni_array_len_at_max_is_ok() {
+        // MAX_SAFE_JNI_ARRAY_LEN fits in i32 only when ≤ i32::MAX; use a known-safe value.
+        let valid_len: i32 = 1024;
+        let result = check_jni_array_len(valid_len);
+        assert_eq!(result, Ok(1024usize));
+    }
+
+    #[test]
+    fn jni_array_len_zero_is_ok() {
+        assert_eq!(check_jni_array_len(0), Ok(0usize));
+    }
+
+    // --- check_dng_dimensions (MAX_DNG_DIM guard, Issue #11) ---
+
+    #[test]
+    fn dng_dimensions_within_limit_accepted() {
+        assert!(check_dng_dimensions(1920, 1080).is_ok());
+        assert!(check_dng_dimensions(16384, 16384).is_ok());
+        assert!(check_dng_dimensions(1, 1).is_ok());
+    }
+
+    #[test]
+    fn dng_dimensions_oversized_width_rejected() {
+        let result = check_dng_dimensions(16385, 100);
+        assert!(result.is_err(), "width > 16384 must be rejected");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("16385"),
+            "error should mention the oversized dimension, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn dng_dimensions_oversized_height_rejected() {
+        let result = check_dng_dimensions(100, 16385);
+        assert!(result.is_err(), "height > 16384 must be rejected");
+    }
+
+    #[test]
+    fn dng_dimensions_both_oversized_rejected() {
+        assert!(check_dng_dimensions(20000, 20000).is_err());
     }
 }

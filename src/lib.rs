@@ -1,4 +1,4 @@
-#[cfg(feature = "android")]
+#[cfg(any(feature = "android", test))]
 pub mod android;
 pub mod cie_data;
 pub mod depth;
