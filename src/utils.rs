@@ -196,7 +196,11 @@ mod tests {
         let mut dst = make_image(w, h, &vec![1.0f32; (w * h * 3) as usize]); // pre-fill with 1
         vertical_blur_pass(&src, &mut dst, 1);
         for p in dst.pixels() {
-            assert_eq!(p.0, [0.0f32, 0.0, 0.0], "all-zero input must give all-zero output");
+            assert_eq!(
+                p.0,
+                [0.0f32, 0.0, 0.0],
+                "all-zero input must give all-zero output"
+            );
         }
     }
 
@@ -265,9 +269,9 @@ mod tests {
         let h = 3u32;
         // single column: rows 0, 1, 2 with equal R=G=B per row
         let data = vec![
-            0.0f32, 0.0, 0.0,  // row 0
-            0.5,    0.5, 0.5,  // row 1
-            1.0,    1.0, 1.0,  // row 2
+            0.0f32, 0.0, 0.0, // row 0
+            0.5, 0.5, 0.5, // row 1
+            1.0, 1.0, 1.0, // row 2
         ];
         let src = make_image(w, h, &data);
         let mut dst = make_image(w, h, &vec![0.0f32; (w * h * 3) as usize]);
@@ -292,11 +296,13 @@ mod tests {
                 for y in 0..h as usize {
                     sums[y] = s;
                     let out_y = (y as i32 - r).max(0) as usize;
-                    let in_y  = (y as i32 + r + 1).min(h as i32 - 1) as usize;
+                    let in_y = (y as i32 + r + 1).min(h as i32 - 1) as usize;
                     s += vals[in_y] - vals[out_y];
                 }
-                sums.into_iter().flat_map(|s| [s * weight, s * weight, s * weight]).collect::<Vec<_>>()
-            }
+                sums.into_iter()
+                    .flat_map(|s| [s * weight, s * weight, s * weight])
+                    .collect::<Vec<_>>()
+            },
         ];
         let reference: Vec<f32> = reference.into_iter().flatten().collect();
 

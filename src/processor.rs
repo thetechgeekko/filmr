@@ -546,8 +546,7 @@ impl PipelineStage for AccurateDevelopStage {
 
         // Pass 2.5: White balance + warmth — uses the shared helper from pipeline
         // to keep logic identical to Fast mode DevelopStage.
-        let exposure_avg =
-            crate::pipeline::sample_exposure_average(image, |r, g, b| [r, g, b]);
+        let exposure_avg = crate::pipeline::sample_exposure_average(image, |r, g, b| [r, g, b]);
         let wb_gains = crate::pipeline::compute_wb_gains(config, exposure_avg);
 
         image.par_chunks_mut(3).for_each(|pixel| {

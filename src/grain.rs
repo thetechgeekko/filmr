@@ -113,8 +113,16 @@ impl GrainModel {
         // sample_noise so we can still honour density-dependent variance.
         for (r, g, b) in pixels.iter_mut() {
             let nr = self.sample_noise(*r, rng);
-            let ng = if self.monochrome { nr } else { self.sample_noise(*g, rng) };
-            let nb = if self.monochrome { nr } else { self.sample_noise(*b, rng) };
+            let ng = if self.monochrome {
+                nr
+            } else {
+                self.sample_noise(*g, rng)
+            };
+            let nb = if self.monochrome {
+                nr
+            } else {
+                self.sample_noise(*b, rng)
+            };
             *r = (*r + nr).max(0.0);
             *g = (*g + ng).max(0.0);
             *b = (*b + nb).max(0.0);
