@@ -329,7 +329,7 @@ impl App for FilmrApp {
         egui::TopBottomPanel::top("toolbar")
             .frame(
                 egui::Frame::side_top_panel(&ctx.style())
-                    .inner_margin(egui::Margin::symmetric(8, 4)),
+                    .inner_margin(egui::Margin::symmetric(10, 6)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -363,23 +363,32 @@ impl App for FilmrApp {
                         };
 
                         // ── Panel group: Settings, Metrics ──
-                        if ui.add(tb_btn("⚙", false)).clicked() {
+                        if ui
+                            .add(tb_btn("⚙", self.show_settings))
+                            .on_hover_text("Settings")
+                            .clicked()
+                        {
                             self.show_settings = true;
                         }
-                        if ui.add(tb_btn("📊 Metrics", self.show_metrics)).clicked() {
+                        if ui
+                            .add(tb_btn("📊 Metrics", self.show_metrics))
+                            .on_hover_text("Toggle metrics panel")
+                            .clicked()
+                        {
                             self.show_metrics = !self.show_metrics;
                         }
 
                         // Separator
                         ui.add_space(6.0);
                         let (r, _) =
-                            ui.allocate_exact_size(egui::vec2(1.0, 18.0), egui::Sense::hover());
-                        ui.painter().rect_filled(r, 0.0, sep_color);
+                            ui.allocate_exact_size(egui::vec2(2.0, 18.0), egui::Sense::hover());
+                        ui.painter().rect_filled(r, 1.0, sep_color);
                         ui.add_space(6.0);
 
                         // ── Action group: Save, Develop ──
                         if ui
                             .add_enabled(self.developed_image.is_some(), tb_btn("💾 Save", false))
+                            .on_hover_text("Save developed image")
                             .clicked()
                         {
                             self.save_image();
@@ -396,23 +405,32 @@ impl App for FilmrApp {
                         .stroke(egui::Stroke::NONE)
                         .corner_radius(6.0)
                         .min_size(egui::vec2(0.0, 28.0));
-                        if ui.add(dev_btn).clicked() {
+                        if ui
+                            .add(dev_btn)
+                            .on_hover_text("Full-resolution development")
+                            .clicked()
+                        {
                             self.develop_image(ctx);
                         }
 
                         // Separator
                         ui.add_space(6.0);
                         let (r, _) =
-                            ui.allocate_exact_size(egui::vec2(1.0, 18.0), egui::Sense::hover());
-                        ui.painter().rect_filled(r, 0.0, sep_color);
+                            ui.allocate_exact_size(egui::vec2(2.0, 18.0), egui::Sense::hover());
+                        ui.painter().rect_filled(r, 1.0, sep_color);
                         ui.add_space(6.0);
 
                         // ── View group: Split, Compare ──
-                        if ui.add(tb_btn("🌓 Split", self.split_view)).clicked() {
+                        if ui
+                            .add(tb_btn("🌓 Split", self.split_view))
+                            .on_hover_text("Toggle split view comparison")
+                            .clicked()
+                        {
                             self.split_view = !self.split_view;
                         }
                         self.show_original = ui
                             .add(tb_btn("👋 Compare", false))
+                            .on_hover_text("Hold to show original")
                             .is_pointer_button_down_on();
                     });
                 });

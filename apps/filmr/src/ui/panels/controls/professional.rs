@@ -23,7 +23,8 @@ pub fn render_effects_tab(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut b
                         )
                         .fill(egui::Color32::from_rgb(42, 42, 48))
                         .stroke(egui::Stroke::NONE)
-                        .corner_radius(4.0),
+                        .corner_radius(4.0)
+                        .min_size(egui::vec2(0.0, 24.0)),
                     )
                     .clicked()
                 {
@@ -39,7 +40,8 @@ pub fn render_effects_tab(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut b
                         )
                         .fill(egui::Color32::from_rgb(42, 42, 48))
                         .stroke(egui::Stroke::NONE)
-                        .corner_radius(4.0),
+                        .corner_radius(4.0)
+                        .min_size(egui::vec2(0.0, 24.0)),
                     )
                     .clicked()
                 {
@@ -55,7 +57,8 @@ pub fn render_effects_tab(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut b
                         )
                         .fill(egui::Color32::from_rgb(42, 42, 48))
                         .stroke(egui::Stroke::NONE)
-                        .corner_radius(4.0),
+                        .corner_radius(4.0)
+                        .min_size(egui::vec2(0.0, 24.0)),
                     )
                     .clicked()
                 {
@@ -73,7 +76,8 @@ pub fn render_effects_tab(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut b
                         )
                         .fill(egui::Color32::from_rgb(42, 42, 48))
                         .stroke(egui::Stroke::NONE)
-                        .corner_radius(4.0),
+                        .corner_radius(4.0)
+                        .min_size(egui::vec2(0.0, 24.0)),
                     )
                     .clicked()
             {
@@ -215,7 +219,8 @@ pub fn render_detail_tab(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut bo
                     )
                     .fill(egui::Color32::from_rgb(42, 42, 48))
                     .stroke(egui::Stroke::NONE)
-                    .corner_radius(4.0),
+                    .corner_radius(4.0)
+                    .min_size(egui::vec2(0.0, 24.0)),
                 )
                 .on_hover_text("New trajectory")
                 .clicked()
@@ -260,7 +265,7 @@ pub fn render_white_balance(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut
     ];
 
     // Pill
-    let pill_h = 22.0f32;
+    let pill_h = 26.0f32;
     let pill_r = pill_h / 2.0;
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, pill_h), egui::Sense::hover());
@@ -282,6 +287,10 @@ pub fn render_white_balance(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut
             egui::vec2(seg_w, pill_h),
         );
         let resp = ui.interact(sr, ui.id().with(("wb", i)), egui::Sense::click());
+        if !is_sel && resp.hovered() {
+            ui.painter()
+                .rect_filled(sr, pill_r, egui::Color32::from_rgb(52, 52, 60));
+        }
         ui.painter().text(
             sr.center(),
             egui::Align2::CENTER_CENTER,
@@ -327,7 +336,7 @@ pub fn render_output_mode(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut b
         (OutputMode::Negative, "Negative"),
     ];
 
-    let pill_h = 22.0f32;
+    let pill_h = 26.0f32;
     let pill_r = pill_h / 2.0;
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, pill_h), egui::Sense::hover());
@@ -349,6 +358,10 @@ pub fn render_output_mode(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut b
             egui::vec2(seg_w, pill_h),
         );
         let resp = ui.interact(sr, ui.id().with(("output", i)), egui::Sense::click());
+        if !is_sel && resp.hovered() {
+            ui.painter()
+                .rect_filled(sr, pill_r, egui::Color32::from_rgb(52, 52, 60));
+        }
         ui.painter().text(
             sr.center(),
             egui::Align2::CENTER_CENTER,
@@ -386,7 +399,8 @@ fn render_light_leaks(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut bool)
                     )
                     .fill(egui::Color32::from_rgb(42, 42, 48))
                     .stroke(egui::Stroke::NONE)
-                    .corner_radius(4.0),
+                    .corner_radius(4.0)
+                    .min_size(egui::vec2(0.0, 24.0)),
                 )
                 .clicked()
             {
@@ -402,7 +416,8 @@ fn render_light_leaks(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut bool)
                     )
                     .fill(egui::Color32::from_rgb(42, 42, 48))
                     .stroke(egui::Stroke::NONE)
-                    .corner_radius(4.0),
+                    .corner_radius(4.0)
+                    .min_size(egui::vec2(0.0, 24.0)),
                 )
                 .clicked()
             {
@@ -503,7 +518,8 @@ fn render_light_leaks(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut bool)
                         )
                         .fill(egui::Color32::from_rgb(42, 42, 48))
                         .stroke(egui::Stroke::NONE)
-                        .corner_radius(4.0),
+                        .corner_radius(4.0)
+                        .min_size(egui::vec2(0.0, 24.0)),
                     )
                     .clicked()
                 {
