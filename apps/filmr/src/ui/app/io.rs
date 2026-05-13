@@ -74,8 +74,9 @@ impl FilmrApp {
                     let mut bytes = Vec::new();
                     let mut cursor = std::io::Cursor::new(&mut bytes);
                     let encoder = image::codecs::tiff::TiffEncoder::new(&mut cursor);
+                    use image::ImageEncoder;
                     encoder
-                        .encode(&bytes_16, w, h, image::ExtendedColorType::Rgb16)
+                        .write_image(&bytes_16, w, h, image::ExtendedColorType::Rgb16)
                         .map(|_| bytes)
                 }
                 _ => {
