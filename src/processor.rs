@@ -3,8 +3,8 @@ use crate::film_layer::FilmLayerStack;
 use crate::light_leak::{LightLeakConfig, LightLeakStage};
 use crate::pipeline::{
     create_linear_image, create_output_image, ChromaticAberrationStage, DepthOfFieldStage,
-    HalationStage, MicroMotionStage, MtfStage, ObjectMotionStage, PipelineContext,
-    PipelineStage, RotationalBlurStage, SplitToningStage, VignettingStage,
+    HalationStage, MicroMotionStage, MtfStage, ObjectMotionStage, PipelineContext, PipelineStage,
+    RotationalBlurStage, SplitToningStage, VignettingStage,
 };
 use crate::spectral_engine;
 use image::RgbImage;
@@ -398,7 +398,11 @@ impl PipelineStage for AccurateDevelopStage {
             // Inline uplift × D65 (3 multiplies + 2 adds per bin instead of full uplift)
             let mut scaled = [0.0f32; crate::spectral::BINS];
             // Apply WB to scene RGB before spectral uplifting
-            let (r, g, b) = (pixel[0] * wb_gains[0], pixel[1] * wb_gains[1], pixel[2] * wb_gains[2]);
+            let (r, g, b) = (
+                pixel[0] * wb_gains[0],
+                pixel[1] * wb_gains[1],
+                pixel[2] * wb_gains[2],
+            );
             for (i, s) in scaled.iter_mut().enumerate() {
                 *s = r * uplift_d65[0][i] + g * uplift_d65[1][i] + b * uplift_d65[2][i];
             }
