@@ -4,6 +4,7 @@ pub mod cie_data;
 pub mod depth;
 pub mod film;
 pub mod film_layer;
+pub mod filmic_curve;
 #[cfg(feature = "compute-gpu")]
 pub mod gpu;
 #[cfg(feature = "compute-gpu")]

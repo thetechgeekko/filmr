@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-05-13
+
+### ✨ Features
+
+- **Filmic tone curve**: Three-segment S-curve (toe + shoulder) replaces simple power gamma
+  - Transparent highlights, deeper shadows, less gray
+  - Effective range scaled to 85% of d_max (scanner white-point model)
+- **Export format selection**: JPEG, PNG, TIFF (16-bit) via file dialog
+- **sRGB EXIF tag**: Exported images embed ColorSpace=sRGB for correct color in other apps
+
+### ♻️ Refactoring
+
+- Unified Fast/Accurate modes — both now use full-spectrum pipeline
+  - SimulationMode enum preserved for compatibility but has no effect
+  - ~150 lines of dead Fast-mode code removed
+
+## [0.11.2] - 2026-05-13
+
+### ♻️ Refactoring
+
+- Extract reusable `ui/components/` module: tokens, pill_selector, buttons, sliders
+- Migrate all panels to use shared components (net -310 lines)
+- Single source of truth for colors and sizes in `tokens.rs`
+
+### 🎨 Improvements
+
+- PS-style collapsing sections (full-width header, text chevron, hover bg)
+- Pill selectors: 26px height + hover highlight
+- All action buttons: min 24px height
+- Toolbar: tooltips, 2px separators, 28px buttons
+- Film list: hover text brightens, no nested scroll
+- Stock Studio: "✓ Done" button, styled sliders
+- Force dark theme on macOS/WASM (no light mode leak)
+
 ## [0.11.1] - 2026-05-11
 
 ### 🎨 Improvements

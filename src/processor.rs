@@ -1,17 +1,16 @@
 use crate::film::FilmStock;
 use crate::film_layer::FilmLayerStack;
 use crate::light_leak::{LightLeakConfig, LightLeakStage};
-use crate::physics;
 use crate::pipeline::{
     create_linear_image, create_output_image, ChromaticAberrationStage, DepthOfFieldStage,
-    DevelopStage, HalationStage, MicroMotionStage, MtfStage, ObjectMotionStage, PipelineContext,
-    PipelineStage, RotationalBlurStage,
+    HalationStage, MicroMotionStage, MtfStage, ObjectMotionStage, PipelineContext,
+    PipelineStage, RotationalBlurStage, SplitToningStage,
 };
 use crate::spectral_engine;
 use image::RgbImage;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, instrument};
+use tracing::{info, instrument};
 
 #[cfg(feature = "compute-gpu")]
 use crate::gpu::get_gpu_context;
@@ -82,9 +81,33 @@ pub struct SimulationConfig {
     /// Rotational blur amount (0.0 = off, simulates camera rotation).
     #[serde(default)]
     pub rotational_blur_amount: f32,
+    /// Chromatic aberration strength (0.0 = off, 1.0 = default per film stock).
+    /// Scales the lateral RGB magnification applied by ChromaticAberrationStage.
+    #[serde(default)]
+    pub chromatic_aberration_strength: f32,
+    /// Scale factor applied on top of the film stock's grain amount.
+    /// 0.0 = no grain, 1.0 = stock default (default), 2.0 = twice the grain.
+    #[serde(default = "default_one")]
+    pub grain_multiplier: f32,
+    /// Scale factor applied on top of the film stock's vignette strength.
+    /// 0.0 = no vignette, 1.0 = stock default (default), 2.0 = stronger vignette.
+    #[serde(default = "default_one")]
+    pub vignette_multiplier: f32,
+    /// Hue shift applied to highlight regions (luma > 0.5).
+    /// Positive = warm shift (red↑ blue↓), negative = cool shift. Range: -1.0 to 1.0.
+    #[serde(default)]
+    pub highlight_hue_shift: f32,
+    /// Hue shift applied to shadow regions (luma < 0.5).
+    /// Positive = warm shift (red↑ blue↓), negative = cool shift. Range: -1.0 to 1.0.
+    #[serde(default)]
+    pub shadow_hue_shift: f32,
 }
 
 fn default_motion_blur() -> f32 {
+    1.0
+}
+
+fn default_one() -> f32 {
     1.0
 }
 
@@ -123,6 +146,11 @@ impl Default for SimulationConfig {
             dof_focus: 0.5,
             dof_swirl: 0.0,
             rotational_blur_amount: 0.0,
+            chromatic_aberration_strength: 0.0,
+            grain_multiplier: 1.0,
+            vignette_multiplier: 1.0,
+            highlight_hue_shift: 0.0,
+            shadow_hue_shift: 0.0,
         }
     }
 }
@@ -131,143 +159,20 @@ fn default_dof_focus() -> f32 {
     0.5
 }
 
-const SPECTRAL_NORM: f32 = 1.0;
-
 #[instrument(skip(input, film))]
 pub fn estimate_exposure_time(input: &RgbImage, film: &FilmStock) -> f32 {
-    estimate_exposure_time_for_mode(input, film, SimulationMode::Fast)
+    estimate_exposure_time_for_mode(input, film, SimulationMode::Accurate)
 }
 
 /// Estimate exposure time, accounting for simulation mode.
-/// In Accurate mode, normalization already handles auto-exposure,
-/// so this returns 1.0 (neutral EV).
-#[instrument(skip(input, film))]
+/// Both modes now use the full-spectrum pipeline which handles
+/// auto-exposure via internal normalization, so this always returns 1.0.
 pub fn estimate_exposure_time_for_mode(
-    input: &RgbImage,
-    film: &FilmStock,
-    mode: SimulationMode,
+    _input: &RgbImage,
+    _film: &FilmStock,
+    _mode: SimulationMode,
 ) -> f32 {
-    if mode == SimulationMode::Accurate {
-        return 1.0;
-    }
-    debug!("Estimating exposure time...");
-
-    let spectral_matrix = film.compute_spectral_matrix();
-    let apply_matrix = |r: f32, g: f32, b: f32| -> [f32; 3] {
-        [
-            r * spectral_matrix[0][0] + g * spectral_matrix[0][1] + b * spectral_matrix[0][2],
-            r * spectral_matrix[1][0] + g * spectral_matrix[1][1] + b * spectral_matrix[1][2],
-            r * spectral_matrix[2][0] + g * spectral_matrix[2][1] + b * spectral_matrix[2][2],
-        ]
-    };
-
-    let total = (input.width() * input.height()) as usize;
-    let max_samples = 20000usize;
-    let step = (total / max_samples).max(1);
-    let mut samples = Vec::with_capacity((total / step).max(1));
-    for (i, p) in input.pixels().enumerate() {
-        if i % step != 0 {
-            continue;
-        }
-        let r = physics::srgb_to_linear(p[0] as f32 / 255.0);
-        let g = physics::srgb_to_linear(p[1] as f32 / 255.0);
-        let b = physics::srgb_to_linear(p[2] as f32 / 255.0);
-        let exposure_vals = apply_matrix(r, g, b);
-        let r_in = (exposure_vals[0] * SPECTRAL_NORM).max(0.0);
-        let g_in = (exposure_vals[1] * SPECTRAL_NORM).max(0.0);
-        let b_in = (exposure_vals[2] * SPECTRAL_NORM).max(0.0);
-        if r_in > 0.0 || g_in > 0.0 || b_in > 0.0 {
-            samples.push([r_in, g_in, b_in]);
-        }
-    }
-    if samples.is_empty() {
-        return 1.0;
-    }
-    let mut log_sum = 0.0f32;
-    let mut count = 0.0f32;
-    for s in &samples {
-        let lum = (s[0] + s[1] + s[2]) / 3.0;
-        if lum > 0.0 {
-            log_sum += lum.ln();
-            count += 1.0;
-        }
-    }
-    if count == 0.0 {
-        return 1.0;
-    }
-    let log_avg = (log_sum / count).exp();
-    let exposure_offset_avg = (film.r_curve.exposure_offset
-        + film.g_curve.exposure_offset
-        + film.b_curve.exposure_offset)
-        / 3.0;
-    let iso_norm = (100.0 / film.iso).clamp(0.1, 10.0);
-    let base_exposure = exposure_offset_avg / log_avg;
-    let t_base = (base_exposure * iso_norm).max(1.0e-6);
-    let map_densities = |densities: [f32; 3]| -> (f32, f32, f32) {
-        let net_r = (densities[0] - film.r_curve.d_min).max(0.0);
-        let net_g = (densities[1] - film.g_curve.d_min).max(0.0);
-        let net_b = (densities[2] - film.b_curve.d_min).max(0.0);
-        // Density linear mapping (same as create_output_image Positive path)
-        let range_r = (film.r_curve.d_max - film.r_curve.d_min).max(0.01);
-        let range_g = (film.g_curve.d_max - film.g_curve.d_min).max(0.01);
-        let range_b = (film.b_curve.d_max - film.b_curve.d_min).max(0.01);
-        let tone_gamma = 2.47f32;
-        (
-            (net_r / range_r).clamp(0.0, 1.0).powf(tone_gamma),
-            (net_g / range_g).clamp(0.0, 1.0).powf(tone_gamma),
-            (net_b / range_b).clamp(0.0, 1.0).powf(tone_gamma),
-        )
-    };
-    let target_mid: f32 = 0.18;
-    let target_hi: f32 = 0.70;
-    let target_lo: f32 = 0.05;
-    let mut t_min: f32 = (t_base / 64.0).max(1.0e-4);
-    let mut t_max: f32 = (t_base * 8.0).min(4.0);
-    if t_max <= t_min {
-        t_max = (t_min * 2.0).min(4.0);
-    }
-    for _ in 0..8 {
-        let t = 0.5 * (t_min + t_max);
-
-        // Reciprocity Failure Correction for Estimation
-        // E_film = E_actual / (1 + beta * log10(t)^2)
-        // We use t as E_actual (assuming I=1).
-        let t_eff = if t > 1.0 {
-            let factor = 1.0 + film.reciprocity.beta * t.log10().powi(2);
-            t / factor
-        } else {
-            t
-        };
-
-        let mut lum = Vec::with_capacity(samples.len());
-        for s in &samples {
-            let r = (s[0] * t_eff).max(1.0e-6).log10();
-            let g = (s[1] * t_eff).max(1.0e-6).log10();
-            let b = (s[2] * t_eff).max(1.0e-6).log10();
-            let densities = film.map_log_exposure([r, g, b]);
-            let (r_lin, g_lin, b_lin) = map_densities(densities);
-            lum.push(0.2126 * r_lin + 0.7152 * g_lin + 0.0722 * b_lin);
-        }
-        lum.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let len = lum.len();
-        let p10 = lum[((len - 1) as f32 * 0.1).round() as usize];
-        let p50 = lum[((len - 1) as f32 * 0.5).round() as usize];
-        let p90 = lum[((len - 1) as f32 * 0.9).round() as usize];
-        if p90 > target_hi {
-            t_max = t;
-            continue;
-        }
-        if p10 < target_lo {
-            t_min = t;
-            continue;
-        }
-        if p50 > target_mid {
-            t_max = t;
-        } else {
-            t_min = t;
-        }
-    }
-    (0.5 * (t_min + t_max)).clamp(0.001, 4.0)
+    1.0
 }
 
 /// Main processor function.
@@ -310,45 +215,28 @@ pub fn process_image_with_depth(
     };
 
     // 3. Other Stages
-    let stages: Vec<Box<dyn PipelineStage>> = match config.simulation_mode {
-        SimulationMode::Fast => vec![
-            Box::new(MicroMotionStage),
-            Box::new(ObjectMotionStage),
-            Box::new(DepthOfFieldStage),
-            Box::new(RotationalBlurStage),
-            Box::new(MtfStage),
-            Box::new(ChromaticAberrationStage),
-            Box::new(DevelopStage),
-        ],
-        SimulationMode::Accurate => {
-            // Lens/scene effects BEFORE develop (operate on linear RGB)
-            let pre_stages: Vec<Box<dyn PipelineStage>> = vec![
-                Box::new(MicroMotionStage),
-                Box::new(ObjectMotionStage),
-                Box::new(DepthOfFieldStage),
-                Box::new(RotationalBlurStage),
-                Box::new(MtfStage),
-                Box::new(ChromaticAberrationStage),
-            ];
-            for stage in pre_stages.iter() {
-                stage.process(&mut image_buffer, &context);
-            }
-            AccurateDevelopStage.process(&mut image_buffer, &context);
-            vec![]
-        }
-    };
-
-    for stage in stages.iter() {
+    // Both Fast and Accurate now use the full-spectrum pipeline
+    let pre_stages: Vec<Box<dyn PipelineStage>> = vec![
+        Box::new(MicroMotionStage),
+        Box::new(ObjectMotionStage),
+        Box::new(DepthOfFieldStage),
+        Box::new(RotationalBlurStage),
+        Box::new(MtfStage),
+        Box::new(ChromaticAberrationStage),
+    ];
+    for stage in pre_stages.iter() {
         stage.process(&mut image_buffer, &context);
     }
+    AccurateDevelopStage.process(&mut image_buffer, &context);
 
-    create_output_image(&image_buffer, &context)
+    let mut output = create_output_image(&image_buffer, &context);
+    SplitToningStage::process(&mut output, config);
+    output
 }
 
 /// # Accurate Develop Stage
 ///
 /// Full-spectrum per-wavelength propagation through the film layer stack.
-/// Replaces DevelopStage in Accurate mode.
 struct AccurateDevelopStage;
 
 impl PipelineStage for AccurateDevelopStage {
@@ -414,13 +302,18 @@ impl PipelineStage for AccurateDevelopStage {
             let net_r = (d[0] - film.r_curve.d_min).max(0.0);
             let net_g = (d[1] - film.g_curve.d_min).max(0.0);
             let net_b = (d[2] - film.b_curve.d_min).max(0.0);
-            let range_r = (film.r_curve.d_max - film.r_curve.d_min).max(0.01);
-            let range_g = (film.g_curve.d_max - film.g_curve.d_min).max(0.01);
-            let range_b = (film.b_curve.d_max - film.b_curve.d_min).max(0.01);
-            let tone_gamma = 2.47f32;
-            let r = (net_r / range_r).clamp(0.0, 1.0).powf(tone_gamma);
-            let g = (net_g / range_g).clamp(0.0, 1.0).powf(tone_gamma);
-            let b = (net_b / range_b).clamp(0.0, 1.0).powf(tone_gamma);
+            let range_scale = 0.85;
+            let range_r = (film.r_curve.d_max - film.r_curve.d_min).max(0.01) * range_scale;
+            let range_g = (film.g_curve.d_max - film.g_curve.d_min).max(0.01) * range_scale;
+            let range_b = (film.b_curve.d_max - film.b_curve.d_min).max(0.01) * range_scale;
+            use crate::filmic_curve::FilmicCurve;
+            let curve = match film.film_type {
+                crate::film::FilmType::ColorSlide => FilmicCurve::slide(),
+                _ => FilmicCurve::negative(),
+            };
+            let r = curve.map(net_r / range_r);
+            let g = curve.map(net_g / range_g);
+            let b = curve.map(net_b / range_b);
             0.2126 * r + 0.7152 * g + 0.0722 * b
         };
 
@@ -727,12 +620,93 @@ pub async fn process_image_async(
         Box::new(RotationalBlurStage),
         Box::new(MtfStage),
         Box::new(ChromaticAberrationStage),
-        Box::new(DevelopStage),
     ];
 
     for stage in stages {
         stage.process(&mut image_buffer, &context);
     }
+    AccurateDevelopStage.process(&mut image_buffer, &context);
 
-    create_output_image(&image_buffer, &context)
+    let mut output = create_output_image(&image_buffer, &context);
+    SplitToningStage::process(&mut output, config);
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grain_multiplier_defaults_to_one() {
+        let cfg = SimulationConfig::default();
+        assert_eq!(cfg.grain_multiplier, 1.0);
+    }
+
+    #[test]
+    fn vignette_multiplier_defaults_to_one() {
+        let cfg = SimulationConfig::default();
+        assert_eq!(cfg.vignette_multiplier, 1.0);
+    }
+
+    #[test]
+    fn multipliers_deserialize_from_json() {
+        let json = r#"{"exposure_time":1.0,"enable_grain":true,"output_mode":"Positive",
+                       "white_balance_mode":"Off","white_balance_strength":1.0,"warmth":0.0,
+                       "saturation":1.0,"light_leak":{"enabled":false,"leaks":[]},
+                       "grain_multiplier":0.5,"vignette_multiplier":2.0}"#;
+        let cfg: SimulationConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.grain_multiplier, 0.5);
+        assert_eq!(cfg.vignette_multiplier, 2.0);
+    }
+
+    #[test]
+    fn chromatic_aberration_strength_zero_is_noop() {
+        // A config with strength=0 should deserialize correctly from JSON
+        let json = r#"{"exposure_time":1.0,"enable_grain":false,"output_mode":"Positive",
+                       "white_balance_mode":"Off","white_balance_strength":1.0,"warmth":0.0,
+                       "saturation":1.0,"light_leak":{"enabled":false,"leaks":[]},
+                       "chromatic_aberration_strength":0.0}"#;
+        let cfg: SimulationConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.chromatic_aberration_strength, 0.0);
+    }
+
+    #[test]
+    fn chromatic_aberration_strength_defaults_to_zero() {
+        // When the field is absent from JSON, it should default to 0.0
+        let json = r#"{"exposure_time":1.0,"enable_grain":false,"output_mode":"Positive",
+                       "white_balance_mode":"Off","white_balance_strength":1.0,"warmth":0.0,
+                       "saturation":1.0,"light_leak":{"enabled":false,"leaks":[]}}"#;
+        let cfg: SimulationConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.chromatic_aberration_strength, 0.0);
+    }
+
+    #[test]
+    fn chromatic_aberration_strength_one_deserializes() {
+        let json = r#"{"exposure_time":1.0,"enable_grain":false,"output_mode":"Positive",
+                       "white_balance_mode":"Off","white_balance_strength":1.0,"warmth":0.0,
+                       "saturation":1.0,"light_leak":{"enabled":false,"leaks":[]},
+                       "chromatic_aberration_strength":1.0}"#;
+        let cfg: SimulationConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.chromatic_aberration_strength, 1.0);
+    }
+
+    #[test]
+    fn split_toning_defaults_zero() {
+        let cfg = SimulationConfig::default();
+        assert_eq!(cfg.highlight_hue_shift, 0.0);
+        assert_eq!(cfg.shadow_hue_shift, 0.0);
+    }
+
+    #[test]
+    fn split_toning_round_trip() {
+        let cfg = SimulationConfig {
+            highlight_hue_shift: 0.3,
+            shadow_hue_shift: -0.2,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: SimulationConfig = serde_json::from_str(&json).unwrap();
+        assert!((back.highlight_hue_shift - 0.3).abs() < 1e-5);
+        assert!((back.shadow_hue_shift - (-0.2)).abs() < 1e-5);
+    }
 }

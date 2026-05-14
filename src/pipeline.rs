@@ -709,20 +709,27 @@ impl PipelineStage for MtfStage {
 pub struct ChromaticAberrationStage;
 
 impl PipelineStage for ChromaticAberrationStage {
-    #[instrument(skip(self, image, _context))]
-    fn process(&self, image: &mut ImageBuffer<Rgb<f32>, Vec<f32>>, _context: &PipelineContext) {
+    #[instrument(skip(self, image, context))]
+    fn process(&self, image: &mut ImageBuffer<Rgb<f32>, Vec<f32>>, context: &PipelineContext) {
+        let strength = context.config.chromatic_aberration_strength;
+        if strength <= 0.0 {
+            return;
+        }
+
         let width = image.width() as usize;
         let height = image.height() as usize;
         let cx = width as f32 / 2.0;
         let cy = height as f32 / 2.0;
 
+        // Base magnification difference (at strength=1.0): R ±0.15%, B ∓0.15%
+        let base_delta = 0.0015f32 * strength;
         // Scale factors: R slightly larger, B slightly smaller
-        let r_scale = 1.0015f32; // R magnified
-        let b_scale = 0.9985f32; // B demagnified
+        let r_scale = 1.0 + base_delta; // R magnified
+        let b_scale = 1.0 - base_delta; // B demagnified
 
         info!(
-            "Applying chromatic aberration (R×{}, B×{})",
-            r_scale, b_scale
+            "Applying chromatic aberration (strength={:.2}, R×{:.4}, B×{:.4})",
+            strength, r_scale, b_scale
         );
 
         let src: Vec<f32> = image.as_flat_samples().as_slice().to_vec();
@@ -769,6 +776,39 @@ fn sample_channel(src: &[f32], w: usize, h: usize, x: f32, y: f32, ch: usize) ->
         + src[i10] * fx * (1.0 - fy)
         + src[i01] * (1.0 - fx) * fy
         + src[i11] * fx * fy
+}
+
+/// # Split Toning Stage
+///
+/// Applies a hue shift to highlights and shadows independently.
+/// Highlights (luma > 0.5) and shadows (luma < 0.5) receive separate warm/cool shifts.
+pub struct SplitToningStage;
+
+impl SplitToningStage {
+    pub fn process(img: &mut image::RgbImage, config: &crate::processor::SimulationConfig) {
+        if config.highlight_hue_shift.abs() < 0.001 && config.shadow_hue_shift.abs() < 0.001 {
+            return;
+        }
+        for pixel in img.pixels_mut() {
+            let r = pixel[0] as f32 / 255.0;
+            let g = pixel[1] as f32 / 255.0;
+            let b = pixel[2] as f32 / 255.0;
+            let luma = 0.299 * r + 0.587 * g + 0.114 * b;
+
+            // Highlight weight: ramps from 0 at luma=0.5 to 1 at luma=1.0
+            let w_hi = ((luma - 0.5) * 2.0).max(0.0);
+            // Shadow weight: ramps from 0 at luma=0.5 to 1 at luma=0.0
+            let w_sh = ((0.5 - luma) * 2.0).max(0.0);
+
+            let shift = w_hi * config.highlight_hue_shift + w_sh * config.shadow_hue_shift;
+            // Simple hue rotation approximation: shift red↑ and blue↓ (warm shift) or vice versa
+            let new_r = (r + shift * 0.5).clamp(0.0, 1.0);
+            let new_b = (b - shift * 0.5).clamp(0.0, 1.0);
+
+            pixel[0] = (new_r * 255.0) as u8;
+            pixel[2] = (new_b * 255.0) as u8;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1101,18 +1141,22 @@ pub fn create_output_image(
                 )
             }
             OutputMode::Positive => {
-                // Density linear mapping + tone gamma (scan model)
-                let range_r = (film.r_curve.d_max - film.r_curve.d_min).max(0.01);
-                let range_g = (film.g_curve.d_max - film.g_curve.d_min).max(0.01);
-                let range_b = (film.b_curve.d_max - film.b_curve.d_min).max(0.01);
-                let tone_gamma = match film.film_type {
-                    FilmType::ColorSlide => 1.5,
-                    _ => 2.47, // ln(0.18)/ln(0.5): maps density midpoint to 18% gray
+                // Filmic tone curve — three-segment (toe + linear + shoulder)
+                use crate::filmic_curve::FilmicCurve;
+                // Use 85% of theoretical range as effective range so highlights reach white
+                // (erf curve is asymptotic — density never truly reaches d_max)
+                let range_scale = 0.85;
+                let range_r = (film.r_curve.d_max - film.r_curve.d_min).max(0.01) * range_scale;
+                let range_g = (film.g_curve.d_max - film.g_curve.d_min).max(0.01) * range_scale;
+                let range_b = (film.b_curve.d_max - film.b_curve.d_min).max(0.01) * range_scale;
+                let curve = match film.film_type {
+                    FilmType::ColorSlide => FilmicCurve::slide(),
+                    _ => FilmicCurve::negative(),
                 };
                 (
-                    (net_r / range_r).clamp(0.0, 1.0).powf(tone_gamma),
-                    (net_g / range_g).clamp(0.0, 1.0).powf(tone_gamma),
-                    (net_b / range_b).clamp(0.0, 1.0).powf(tone_gamma),
+                    curve.map(net_r / range_r),
+                    curve.map(net_g / range_g),
+                    curve.map(net_b / range_b),
                 )
             }
         }
@@ -1226,7 +1270,7 @@ pub fn create_output_image(
                 b_lin = lum + (b_lin - lum) * config.saturation;
             }
 
-            let v_str = film.vignette_strength;
+            let v_str = film.vignette_strength * config.vignette_multiplier;
             if v_str > 0.0 {
                 let px = i as u32 % width;
                 let py = i as u32 / width;
@@ -1274,7 +1318,7 @@ pub fn create_output_image(
     }
 
     // Grain in linear output space (after tone mapping, before sRGB)
-    if config.enable_grain {
+    if config.enable_grain && config.grain_multiplier > 0.0 {
         let gm = &film.grain_model;
         let pixels_per_mm = width as f32 / 36.0;
         let grain_sigma = (gm.blur_radius * 0.05 * pixels_per_mm).max(0.8);
@@ -1311,7 +1355,7 @@ pub fn create_output_image(
         // Grain strength in linear output space.
         // Real Portra 400 σ ≈ 8-20 in sRGB 8-bit → σ ≈ 0.03-0.08 in linear.
         // Scale by alpha (preset-specific) and pixel brightness (Selwyn: brighter = less grain).
-        let base_strength = gm.alpha * 1500.0;
+        let base_strength = gm.alpha * 1500.0 * config.grain_multiplier;
 
         linear_buf
             .par_chunks_mut(3)
