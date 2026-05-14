@@ -5,7 +5,7 @@ use crate::physics;
 use crate::pipeline::{
     create_linear_image, create_output_image, ChromaticAberrationStage, DepthOfFieldStage,
     DevelopStage, HalationStage, MicroMotionStage, MtfStage, ObjectMotionStage, PipelineContext,
-    PipelineStage, RotationalBlurStage,
+    PipelineStage, RotationalBlurStage, SplitToningStage,
 };
 use crate::spectral_engine;
 use image::RgbImage;
@@ -94,6 +94,14 @@ pub struct SimulationConfig {
     /// 0.0 = no vignette, 1.0 = stock default (default), 2.0 = stronger vignette.
     #[serde(default = "default_one")]
     pub vignette_multiplier: f32,
+    /// Hue shift applied to highlight regions (luma > 0.5).
+    /// Positive = warm shift (red↑ blue↓), negative = cool shift. Range: -1.0 to 1.0.
+    #[serde(default)]
+    pub highlight_hue_shift: f32,
+    /// Hue shift applied to shadow regions (luma < 0.5).
+    /// Positive = warm shift (red↑ blue↓), negative = cool shift. Range: -1.0 to 1.0.
+    #[serde(default)]
+    pub shadow_hue_shift: f32,
 }
 
 fn default_motion_blur() -> f32 {
@@ -142,6 +150,8 @@ impl Default for SimulationConfig {
             chromatic_aberration_strength: 0.0,
             grain_multiplier: 1.0,
             vignette_multiplier: 1.0,
+            highlight_hue_shift: 0.0,
+            shadow_hue_shift: 0.0,
         }
     }
 }
@@ -361,7 +371,9 @@ pub fn process_image_with_depth(
         stage.process(&mut image_buffer, &context);
     }
 
-    create_output_image(&image_buffer, &context)
+    let mut output = create_output_image(&image_buffer, &context);
+    SplitToningStage::process(&mut output, config);
+    output
 }
 
 /// # Accurate Develop Stage
@@ -753,7 +765,9 @@ pub async fn process_image_async(
         stage.process(&mut image_buffer, &context);
     }
 
-    create_output_image(&image_buffer, &context)
+    let mut output = create_output_image(&image_buffer, &context);
+    SplitToningStage::process(&mut output, config);
+    output
 }
 
 #[cfg(test)]
@@ -812,5 +826,25 @@ mod tests {
                        "chromatic_aberration_strength":1.0}"#;
         let cfg: SimulationConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.chromatic_aberration_strength, 1.0);
+    }
+
+    #[test]
+    fn split_toning_defaults_zero() {
+        let cfg = SimulationConfig::default();
+        assert_eq!(cfg.highlight_hue_shift, 0.0);
+        assert_eq!(cfg.shadow_hue_shift, 0.0);
+    }
+
+    #[test]
+    fn split_toning_round_trip() {
+        let cfg = SimulationConfig {
+            highlight_hue_shift: 0.3,
+            shadow_hue_shift: -0.2,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: SimulationConfig = serde_json::from_str(&json).unwrap();
+        assert!((back.highlight_hue_shift - 0.3).abs() < 1e-5);
+        assert!((back.shadow_hue_shift - (-0.2)).abs() < 1e-5);
     }
 }

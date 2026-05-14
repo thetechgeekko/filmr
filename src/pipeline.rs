@@ -778,6 +778,39 @@ fn sample_channel(src: &[f32], w: usize, h: usize, x: f32, y: f32, ch: usize) ->
         + src[i11] * fx * fy
 }
 
+/// # Split Toning Stage
+///
+/// Applies a hue shift to highlights and shadows independently.
+/// Highlights (luma > 0.5) and shadows (luma < 0.5) receive separate warm/cool shifts.
+pub struct SplitToningStage;
+
+impl SplitToningStage {
+    pub fn process(img: &mut image::RgbImage, config: &crate::processor::SimulationConfig) {
+        if config.highlight_hue_shift.abs() < 0.001 && config.shadow_hue_shift.abs() < 0.001 {
+            return;
+        }
+        for pixel in img.pixels_mut() {
+            let r = pixel[0] as f32 / 255.0;
+            let g = pixel[1] as f32 / 255.0;
+            let b = pixel[2] as f32 / 255.0;
+            let luma = 0.299 * r + 0.587 * g + 0.114 * b;
+
+            // Highlight weight: ramps from 0 at luma=0.5 to 1 at luma=1.0
+            let w_hi = ((luma - 0.5) * 2.0).max(0.0);
+            // Shadow weight: ramps from 0 at luma=0.5 to 1 at luma=0.0
+            let w_sh = ((0.5 - luma) * 2.0).max(0.0);
+
+            let shift = w_hi * config.highlight_hue_shift + w_sh * config.shadow_hue_shift;
+            // Simple hue rotation approximation: shift red↑ and blue↓ (warm shift) or vice versa
+            let new_r = (r + shift * 0.5).clamp(0.0, 1.0);
+            let new_b = (b - shift * 0.5).clamp(0.0, 1.0);
+
+            pixel[0] = (new_r * 255.0) as u8;
+            pixel[2] = (new_b * 255.0) as u8;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Shared white-balance helper (used by both DevelopStage and AccurateDevelopStage)
 // ---------------------------------------------------------------------------
