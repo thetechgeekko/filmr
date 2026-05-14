@@ -709,20 +709,27 @@ impl PipelineStage for MtfStage {
 pub struct ChromaticAberrationStage;
 
 impl PipelineStage for ChromaticAberrationStage {
-    #[instrument(skip(self, image, _context))]
-    fn process(&self, image: &mut ImageBuffer<Rgb<f32>, Vec<f32>>, _context: &PipelineContext) {
+    #[instrument(skip(self, image, context))]
+    fn process(&self, image: &mut ImageBuffer<Rgb<f32>, Vec<f32>>, context: &PipelineContext) {
+        let strength = context.config.chromatic_aberration_strength;
+        if strength <= 0.0 {
+            return;
+        }
+
         let width = image.width() as usize;
         let height = image.height() as usize;
         let cx = width as f32 / 2.0;
         let cy = height as f32 / 2.0;
 
+        // Base magnification difference (at strength=1.0): R ±0.15%, B ∓0.15%
+        let base_delta = 0.0015f32 * strength;
         // Scale factors: R slightly larger, B slightly smaller
-        let r_scale = 1.0015f32; // R magnified
-        let b_scale = 0.9985f32; // B demagnified
+        let r_scale = 1.0 + base_delta; // R magnified
+        let b_scale = 1.0 - base_delta; // B demagnified
 
         info!(
-            "Applying chromatic aberration (R×{}, B×{})",
-            r_scale, b_scale
+            "Applying chromatic aberration (strength={:.2}, R×{:.4}, B×{:.4})",
+            strength, r_scale, b_scale
         );
 
         let src: Vec<f32> = image.as_flat_samples().as_slice().to_vec();

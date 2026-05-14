@@ -82,6 +82,10 @@ pub struct SimulationConfig {
     /// Rotational blur amount (0.0 = off, simulates camera rotation).
     #[serde(default)]
     pub rotational_blur_amount: f32,
+    /// Chromatic aberration strength (0.0 = off, 1.0 = default per film stock).
+    /// Scales the lateral RGB magnification applied by ChromaticAberrationStage.
+    #[serde(default)]
+    pub chromatic_aberration_strength: f32,
 }
 
 fn default_motion_blur() -> f32 {
@@ -123,6 +127,7 @@ impl Default for SimulationConfig {
             dof_focus: 0.5,
             dof_swirl: 0.0,
             rotational_blur_amount: 0.0,
+            chromatic_aberration_strength: 0.0,
         }
     }
 }
@@ -735,4 +740,40 @@ pub async fn process_image_async(
     }
 
     create_output_image(&image_buffer, &context)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chromatic_aberration_strength_zero_is_noop() {
+        // A config with strength=0 should deserialize correctly from JSON
+        let json = r#"{"exposure_time":1.0,"enable_grain":false,"output_mode":"Positive",
+                       "white_balance_mode":"Off","white_balance_strength":1.0,"warmth":0.0,
+                       "saturation":1.0,"light_leak":{"enabled":false,"leaks":[]},
+                       "chromatic_aberration_strength":0.0}"#;
+        let cfg: SimulationConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.chromatic_aberration_strength, 0.0);
+    }
+
+    #[test]
+    fn chromatic_aberration_strength_defaults_to_zero() {
+        // When the field is absent from JSON, it should default to 0.0
+        let json = r#"{"exposure_time":1.0,"enable_grain":false,"output_mode":"Positive",
+                       "white_balance_mode":"Off","white_balance_strength":1.0,"warmth":0.0,
+                       "saturation":1.0,"light_leak":{"enabled":false,"leaks":[]}}"#;
+        let cfg: SimulationConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.chromatic_aberration_strength, 0.0);
+    }
+
+    #[test]
+    fn chromatic_aberration_strength_one_deserializes() {
+        let json = r#"{"exposure_time":1.0,"enable_grain":false,"output_mode":"Positive",
+                       "white_balance_mode":"Off","white_balance_strength":1.0,"warmth":0.0,
+                       "saturation":1.0,"light_leak":{"enabled":false,"leaks":[]},
+                       "chromatic_aberration_strength":1.0}"#;
+        let cfg: SimulationConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.chromatic_aberration_strength, 1.0);
+    }
 }
