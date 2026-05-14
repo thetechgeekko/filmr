@@ -229,18 +229,28 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_proce
     style_key: JString<'local>,
     config_json: JString<'local>,
 ) -> jbyteArray {
-    match process_image_impl(
-        &mut env,
-        &rgba_bytes,
-        width,
-        height,
-        &preset_key,
-        &style_key,
-        &config_json,
-    ) {
-        Ok(arr) => arr,
-        Err(e) => {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        process_image_impl(
+            &mut env,
+            &rgba_bytes,
+            width,
+            height,
+            &preset_key,
+            &style_key,
+            &config_json,
+        )
+    }));
+    match result {
+        Ok(Ok(arr)) => arr,
+        Ok(Err(e)) => {
             let _ = env.throw_new("java/lang/RuntimeException", e.as_str());
+            std::ptr::null_mut()
+        }
+        Err(_) => {
+            let _ = env.throw_new(
+                "java/lang/RuntimeException",
+                "filmr: internal error (native panic in processImage)",
+            );
             std::ptr::null_mut()
         }
     }
@@ -614,17 +624,27 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_proce
     config_json: JString<'local>,
     model_path: JString<'local>,
 ) -> jbyteArray {
-    match process_raw_dng_impl(
-        &mut env,
-        &dng_bytes,
-        &preset_key,
-        &style_key,
-        &config_json,
-        &model_path,
-    ) {
-        Ok(arr) => arr,
-        Err(e) => {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        process_raw_dng_impl(
+            &mut env,
+            &dng_bytes,
+            &preset_key,
+            &style_key,
+            &config_json,
+            &model_path,
+        )
+    }));
+    match result {
+        Ok(Ok(arr)) => arr,
+        Ok(Err(e)) => {
             let _ = env.throw_new("java/lang/RuntimeException", e.as_str());
+            std::ptr::null_mut()
+        }
+        Err(_) => {
+            let _ = env.throw_new(
+                "java/lang/RuntimeException",
+                "filmr: internal error (native panic in processRawDng)",
+            );
             std::ptr::null_mut()
         }
     }
@@ -745,19 +765,29 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_proce
     config_json: JString<'local>,
     model_path: JString<'local>,
 ) -> jbyteArray {
-    match process_with_depth_impl(
-        &mut env,
-        &rgba_bytes,
-        width,
-        height,
-        &preset_key,
-        &style_key,
-        &config_json,
-        &model_path,
-    ) {
-        Ok(arr) => arr,
-        Err(e) => {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        process_with_depth_impl(
+            &mut env,
+            &rgba_bytes,
+            width,
+            height,
+            &preset_key,
+            &style_key,
+            &config_json,
+            &model_path,
+        )
+    }));
+    match result {
+        Ok(Ok(arr)) => arr,
+        Ok(Err(e)) => {
             let _ = env.throw_new("java/lang/RuntimeException", e.as_str());
+            std::ptr::null_mut()
+        }
+        Err(_) => {
+            let _ = env.throw_new(
+                "java/lang/RuntimeException",
+                "filmr: internal error (native panic in processImageWithDepth)",
+            );
             std::ptr::null_mut()
         }
     }
