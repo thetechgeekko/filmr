@@ -86,9 +86,21 @@ pub struct SimulationConfig {
     /// Scales the lateral RGB magnification applied by ChromaticAberrationStage.
     #[serde(default)]
     pub chromatic_aberration_strength: f32,
+    /// Scale factor applied on top of the film stock's grain amount.
+    /// 0.0 = no grain, 1.0 = stock default (default), 2.0 = twice the grain.
+    #[serde(default = "default_one")]
+    pub grain_multiplier: f32,
+    /// Scale factor applied on top of the film stock's vignette strength.
+    /// 0.0 = no vignette, 1.0 = stock default (default), 2.0 = stronger vignette.
+    #[serde(default = "default_one")]
+    pub vignette_multiplier: f32,
 }
 
 fn default_motion_blur() -> f32 {
+    1.0
+}
+
+fn default_one() -> f32 {
     1.0
 }
 
@@ -128,6 +140,8 @@ impl Default for SimulationConfig {
             dof_swirl: 0.0,
             rotational_blur_amount: 0.0,
             chromatic_aberration_strength: 0.0,
+            grain_multiplier: 1.0,
+            vignette_multiplier: 1.0,
         }
     }
 }
@@ -745,6 +759,29 @@ pub async fn process_image_async(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grain_multiplier_defaults_to_one() {
+        let cfg = SimulationConfig::default();
+        assert_eq!(cfg.grain_multiplier, 1.0);
+    }
+
+    #[test]
+    fn vignette_multiplier_defaults_to_one() {
+        let cfg = SimulationConfig::default();
+        assert_eq!(cfg.vignette_multiplier, 1.0);
+    }
+
+    #[test]
+    fn multipliers_deserialize_from_json() {
+        let json = r#"{"exposure_time":1.0,"enable_grain":true,"output_mode":"Positive",
+                       "white_balance_mode":"Off","white_balance_strength":1.0,"warmth":0.0,
+                       "saturation":1.0,"light_leak":{"enabled":false,"leaks":[]},
+                       "grain_multiplier":0.5,"vignette_multiplier":2.0}"#;
+        let cfg: SimulationConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.grain_multiplier, 0.5);
+        assert_eq!(cfg.vignette_multiplier, 2.0);
+    }
 
     #[test]
     fn chromatic_aberration_strength_zero_is_noop() {

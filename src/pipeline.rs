@@ -1233,7 +1233,7 @@ pub fn create_output_image(
                 b_lin = lum + (b_lin - lum) * config.saturation;
             }
 
-            let v_str = film.vignette_strength;
+            let v_str = film.vignette_strength * config.vignette_multiplier;
             if v_str > 0.0 {
                 let px = i as u32 % width;
                 let py = i as u32 / width;
@@ -1281,7 +1281,7 @@ pub fn create_output_image(
     }
 
     // Grain in linear output space (after tone mapping, before sRGB)
-    if config.enable_grain {
+    if config.enable_grain && config.grain_multiplier > 0.0 {
         let gm = &film.grain_model;
         let pixels_per_mm = width as f32 / 36.0;
         let grain_sigma = (gm.blur_radius * 0.05 * pixels_per_mm).max(0.8);
@@ -1318,7 +1318,7 @@ pub fn create_output_image(
         // Grain strength in linear output space.
         // Real Portra 400 σ ≈ 8-20 in sRGB 8-bit → σ ≈ 0.03-0.08 in linear.
         // Scale by alpha (preset-specific) and pixel brightness (Selwyn: brighter = less grain).
-        let base_strength = gm.alpha * 1500.0;
+        let base_strength = gm.alpha * 1500.0 * config.grain_multiplier;
 
         linear_buf
             .par_chunks_mut(3)
