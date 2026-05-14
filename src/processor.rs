@@ -4,7 +4,7 @@ use crate::light_leak::{LightLeakConfig, LightLeakStage};
 use crate::pipeline::{
     create_linear_image, create_output_image, ChromaticAberrationStage, DepthOfFieldStage,
     HalationStage, MicroMotionStage, MtfStage, ObjectMotionStage, PipelineContext,
-    PipelineStage, RotationalBlurStage, SplitToningStage,
+    PipelineStage, RotationalBlurStage, SplitToningStage, VignettingStage,
 };
 use crate::spectral_engine;
 use image::RgbImage;
@@ -104,7 +104,7 @@ pub struct SimulationConfig {
 }
 
 fn default_motion_blur() -> f32 {
-    1.0
+    0.0
 }
 
 fn default_one() -> f32 {
@@ -138,7 +138,7 @@ impl Default for SimulationConfig {
             warmth: 0.0,
             saturation: 1.0,
             light_leak: LightLeakConfig::default(),
-            motion_blur_amount: 1.0,
+            motion_blur_amount: 0.0,
             motion_blur_seed: 42,
             object_motion_amount: 0.0,
             auto_levels: false,
@@ -223,6 +223,7 @@ pub fn process_image_with_depth(
         Box::new(RotationalBlurStage),
         Box::new(MtfStage),
         Box::new(ChromaticAberrationStage),
+        Box::new(VignettingStage),
     ];
     for stage in pre_stages.iter() {
         stage.process(&mut image_buffer, &context);
@@ -388,11 +389,16 @@ impl PipelineStage for AccurateDevelopStage {
             m
         };
 
+        // Compute WB gains from pre-spectral linear RGB (scene illuminant estimation)
+        let pre_exposure_avg = crate::pipeline::sample_exposure_average(image, |r, g, b| [r, g, b]);
+        let wb_gains = crate::pipeline::compute_wb_gains(config, pre_exposure_avg);
+
         // Pass 1: per-pixel spectral propagation → RGB exposure
         image.par_chunks_mut(3).for_each(|pixel| {
             // Inline uplift × D65 (3 multiplies + 2 adds per bin instead of full uplift)
             let mut scaled = [0.0f32; crate::spectral::BINS];
-            let (r, g, b) = (pixel[0], pixel[1], pixel[2]);
+            // Apply WB to scene RGB before spectral uplifting
+            let (r, g, b) = (pixel[0] * wb_gains[0], pixel[1] * wb_gains[1], pixel[2] * wb_gains[2]);
             for (i, s) in scaled.iter_mut().enumerate() {
                 *s = r * uplift_d65[0][i] + g * uplift_d65[1][i] + b * uplift_d65[2][i];
             }
@@ -436,17 +442,6 @@ impl PipelineStage for AccurateDevelopStage {
                 crate::utils::apply_gaussian_blur(image, sigma_px);
             }
         }
-
-        // Pass 2.5: White balance + warmth — uses the shared helper from pipeline
-        // to keep logic identical to Fast mode DevelopStage.
-        let exposure_avg = crate::pipeline::sample_exposure_average(image, |r, g, b| [r, g, b]);
-        let wb_gains = crate::pipeline::compute_wb_gains(config, exposure_avg);
-
-        image.par_chunks_mut(3).for_each(|pixel| {
-            pixel[0] *= wb_gains[0];
-            pixel[1] *= wb_gains[1];
-            pixel[2] *= wb_gains[2];
-        });
 
         // Pass 3: log-exposure → density via H-D curves + color matrix + inhibition
         let inhibition = stack.inhibition;
@@ -620,6 +615,7 @@ pub async fn process_image_async(
         Box::new(RotationalBlurStage),
         Box::new(MtfStage),
         Box::new(ChromaticAberrationStage),
+        Box::new(VignettingStage),
     ];
 
     for stage in stages {
