@@ -939,4 +939,32 @@ mod tests {
     fn dng_dimensions_both_oversized_rejected() {
         assert!(check_dng_dimensions(20000, 20000).is_err());
     }
+
+    // --- check_dng_dimensions parameterised (Task 1) ---
+
+    #[test]
+    fn check_dng_dimensions_rejects_oversized() {
+        assert!(check_dng_dimensions(17000, 100).is_err());
+        assert!(check_dng_dimensions(100, 17000).is_err());
+        assert!(check_dng_dimensions(4000, 3000).is_ok());
+    }
+
+    // --- decode_dng_to_rgb (Task 1) ---
+    // decode_dng_to_rgb is only compiled with the `android` feature.
+
+    #[cfg(feature = "android")]
+    #[test]
+    fn decode_dng_rejects_empty_input() {
+        let result = decode_dng_to_rgb(&[]);
+        assert!(result.is_err(), "expected error on empty input, got Ok");
+    }
+
+    #[cfg(feature = "android")]
+    #[test]
+    fn decode_dng_rejects_truncated_input() {
+        // A handful of bytes that look like nothing valid to rawler.
+        let garbage = vec![0u8; 16];
+        let result = decode_dng_to_rgb(&garbage);
+        assert!(result.is_err(), "expected error on truncated input, got Ok");
+    }
 }
