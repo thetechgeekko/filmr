@@ -365,81 +365,72 @@ pub extern "system" fn Java_com_reilandeubank_unprocess_engine_FilmrEngine_getDe
 ///   - Remaining bytes: width×height×3 linear-8-bit RGB (R G B R G B …)
 #[cfg(feature = "android")]
 fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
-    use std::io::Cursor;
-    use tiff::decoder::{Decoder, DecodingResult};
-    use tiff::tags::Tag;
+    use rawler::decode;
+    use rawler::decoders::RawDecodeParams;
+    use rawler::imgop::xyz::Illuminant;
+    use rawler::rawimage::RawImageData;
+    use rawler::rawsource::RawSource;
 
-    // DNG-specific tag numbers (not in the tiff crate's built-in Tag enum)
-    const TAG_CFA_PATTERN: u16 = 0x828D; // 33422
-    const TAG_BLACK_LEVEL_CORRECT: u16 = 0xC61A; // 50714
-    const TAG_WHITE_LEVEL: u16 = 0xC61D; // 50717
-                                         // ColorMatrix1: XYZ (D50) → camera native RGB (9 SRational values, row-major)
-    const TAG_COLOR_MATRIX1: u16 = 0xC621; // 50721
+    // --- Open and decode via rawler ---
+    // rawler handles CFA photometric interpretation, all DNG compression types,
+    // and multi-value BitsPerSample correctly.
+    let raw_source = RawSource::new_from_slice(dng);
+    let raw_image = decode(&raw_source, &RawDecodeParams::default())
+        .map_err(|e| format!("DNG decode error: {e}"))?;
 
-    let cursor = Cursor::new(dng);
-    let mut decoder = Decoder::new(cursor).map_err(|e| format!("TIFF decode error: {e}"))?;
+    let w = raw_image.width;
+    let h = raw_image.height;
 
-    let (width, height) = decoder
-        .dimensions()
-        .map_err(|e| format!("TIFF dimensions error: {e}"))?;
+    // Dimension safety cap — reject absurdly large images before allocation.
+    check_dng_dimensions(w as u32, h as u32)?;
 
-    // --- Dimension safety cap (Issue #11) ---
-    // Reject absurdly large images before any allocation to prevent OOM.
-    check_dng_dimensions(width, height)?;
+    // --- Per-Bayer-position black and white levels ---
+    // as_bayer_array() returns [f32; 4] in row-major 2×2 order:
+    // index = (row % 2) * 2 + (col % 2)
+    let black = raw_image.blacklevel.as_bayer_array();
+    let white = raw_image.whitelevel.as_bayer_array();
 
-    // --- Compression check ---
-    // DngCreator.writeImage always produces uncompressed (type 1) strips.
-    // Some third-party DNG files use JPEG (6), lossless-JPEG (7), or deflate (8/32946).
-    // Attempting to read those as raw Bayer produces garbage; bail out clearly instead.
-    let compression = decoder
-        .find_tag(Tag::Compression)
-        .ok()
-        .flatten()
-        .and_then(|v| v.into_u32().ok())
-        .unwrap_or(1); // 1 = no compression (TIFF/DNG default)
+    // --- Normalise Bayer samples to [0.0, 1.0] using per-position levels ---
+    let samples: Vec<f32> = match &raw_image.data {
+        RawImageData::Integer(v) => v
+            .iter()
+            .enumerate()
+            .map(|(i, &x)| {
+                let pos = (i / w % 2) * 2 + (i % w % 2);
+                let bl = black[pos];
+                let wl = white[pos];
+                let scale = wl - bl;
+                if scale > 0.0 {
+                    ((x as f32) - bl) / scale
+                } else {
+                    0.0
+                }
+            })
+            .collect(),
+        RawImageData::Float(v) => v.clone(),
+    };
 
-    match compression {
-        1 => { /* uncompressed — continue */ }
-        6 => {
-            return Err("Compressed DNG (JPEG compression) not supported. \
-             Use uncompressed RAW capture or pre-process with a DNG SDK."
-                .into())
-        }
-        7 => return Err("Compressed DNG (lossless JPEG compression) not supported.".into()),
-        32946 | 8 => return Err("Compressed DNG (deflate compression) not supported.".into()),
-        other => {
-            return Err(format!(
-                "Unknown DNG compression type {other}; cannot decode."
-            ))
-        }
+    if samples.len() < w * h {
+        return Err(format!(
+            "RAW data too short: got {} samples, expected {}×{}={}",
+            samples.len(),
+            w,
+            h,
+            w * h
+        ));
     }
 
-    // --- BitsPerSample ---
-    // BitsPerSample may be stored as a scalar or as an array (one entry per channel,
-    // e.g. [16, 16, 16] for a 3-channel 16-bit image). Use into_u32_vec() to handle
-    // both cases and take the first channel value.
-    let bits_per_sample: u32 = decoder
-        .find_tag(Tag::BitsPerSample)
-        .ok()
-        .flatten()
-        .and_then(|v| v.into_u32_vec().ok().and_then(|vec| vec.into_iter().next()))
-        .unwrap_or(16);
-
-    // --- ColorMatrix1 (XYZ D50 → Camera) → derive Camera → sRGB matrix ---
-    // ColorMatrix1 stores 9 SRational values in row-major order representing the
-    // 3×3 matrix M such that CameraRGB = M × XYZ_D50.
-    // Inverting M gives Camera → XYZ_D50, then multiplying by the standard
-    // XYZ_D50 → linear-sRGB matrix (Bradford-adapted) completes the transform.
-    let cam_to_srgb: Option<[[f32; 3]; 3]> = decoder
-        .find_tag(Tag::Unknown(TAG_COLOR_MATRIX1))
-        .ok()
-        .flatten()
-        .and_then(|v| v.into_f32_vec().ok())
+    // --- Camera → sRGB colour matrix ---
+    // rawler extracts ColorMatrix (XYZ→cam) for D50 and D65 illuminants.
+    // Invert to get cam→XYZ, then multiply by the Bradford-adapted XYZ(D50)→sRGB matrix.
+    let cam_to_srgb: Option<[[f32; 3]; 3]> = raw_image
+        .color_matrix
+        .get(&Illuminant::D50)
+        .or_else(|| raw_image.color_matrix.get(&Illuminant::D65))
         .filter(|v| v.len() >= 9)
         .and_then(|v| {
             let m_xyz_to_cam = [[v[0], v[1], v[2]], [v[3], v[4], v[5]], [v[6], v[7], v[8]]];
             let m_cam_to_xyz = mat3_inverse(m_xyz_to_cam)?;
-            // Bradford-adapted XYZ D50 → linear sRGB matrix
             let m_xyz_to_srgb = [
                 [3.133_856_f32, -1.616_867, -0.490_615],
                 [-0.978_768_f32, 1.916_142, 0.033_454],
@@ -448,84 +439,14 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
             Some(mat3_mul(m_xyz_to_srgb, m_cam_to_xyz))
         });
 
-    // --- CFAPattern (2×2: R=0, G=1, B=2) ---
-    // Default = RGGB
-    let cfa: [u8; 4] = decoder
-        .find_tag(Tag::Unknown(TAG_CFA_PATTERN))
-        .ok()
-        .flatten()
-        .and_then(|v| v.into_u8_vec().ok())
-        .and_then(|v| {
-            if v.len() >= 4 {
-                Some([v[0], v[1], v[2], v[3]])
-            } else {
-                None
-            }
-        })
-        .unwrap_or([0, 1, 1, 2]); // RGGB
-
-    // --- BlackLevel (try correct tag, fall back to 0) ---
-    let black_level: f32 = decoder
-        .find_tag(Tag::Unknown(TAG_BLACK_LEVEL_CORRECT))
-        .ok()
-        .flatten()
-        .and_then(|v| v.into_f32().ok())
-        .unwrap_or(0.0_f32);
-
-    // --- WhiteLevel ---
-    let white_level: f32 = decoder
-        .find_tag(Tag::Unknown(TAG_WHITE_LEVEL))
-        .ok()
-        .flatten()
-        .and_then(|v| v.into_f32().ok())
-        .unwrap_or_else(|| ((1u32 << bits_per_sample) - 1) as f32);
-
-    let scale = white_level - black_level;
-    if scale <= 0.0 {
-        return Err(format!(
-            "Invalid DNG levels: black={black_level} white={white_level}"
-        ));
-    }
-
-    // --- Read RAW Bayer data ---
-    let raw_data = decoder
-        .read_image()
-        .map_err(|e| format!("TIFF read error: {e}"))?;
-
-    // Normalise every sample to [0.0, 1.0]
-    let samples: Vec<f32> = match raw_data {
-        DecodingResult::U8(v) => v
-            .iter()
-            .map(|&x| (x as f32 - black_level) / scale)
-            .collect(),
-        DecodingResult::U16(v) => v
-            .iter()
-            .map(|&x| (x as f32 - black_level) / scale)
-            .collect(),
-        DecodingResult::U32(v) => v
-            .iter()
-            .map(|&x| (x as f32 - black_level) / scale)
-            .collect(),
-        DecodingResult::I16(v) => v
-            .iter()
-            .map(|&x| (x as f32 - black_level) / scale)
-            .collect(),
-        DecodingResult::F32(v) => v.iter().map(|&x| (x - black_level) / scale).collect(),
-        _ => return Err("Unsupported DNG sample format".to_string()),
-    };
-
-    let w = width as usize;
-    let h = height as usize;
-
-    if samples.len() < w * h {
-        return Err(format!(
-            "RAW data too short: got {} samples, expected {}x{}={}",
-            samples.len(),
-            w,
-            h,
-            w * h
-        ));
-    }
+    // --- CFA pattern (2×2): extract once so closures below are Copy ---
+    let cfa = raw_image.cropped_cfa();
+    let cfa_pattern: [u8; 4] = [
+        cfa.color_at(0, 0) as u8,
+        cfa.color_at(0, 1) as u8,
+        cfa.color_at(1, 0) as u8,
+        cfa.color_at(1, 1) as u8,
+    ];
 
     // --- Malvar-He-Cutler gradient-corrected demosaic ---
     // Three-pass approach: (1) gradient-corrected Green everywhere,
@@ -538,7 +459,7 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
         samples[r * w + c]
     };
     // Channel index at (row, col): 0=R, 1=G, 2=B
-    let ch = |row: usize, col: usize| -> usize { cfa[(row % 2) * 2 + (col % 2)] as usize };
+    let ch = |row: usize, col: usize| -> usize { cfa_pattern[(row % 2) * 2 + (col % 2)] as usize };
 
     // Pass 1: Green channel
     // At G sites: copy directly.
@@ -655,8 +576,8 @@ fn decode_dng_to_rgb(dng: &[u8]) -> Result<Vec<u8>, String> {
 
     // Pack result: [width: i32 LE][height: i32 LE][RGB bytes...]
     let mut out = Vec::with_capacity(8 + rgb_u8.len());
-    out.extend_from_slice(&(width as i32).to_le_bytes());
-    out.extend_from_slice(&(height as i32).to_le_bytes());
+    out.extend_from_slice(&(w as i32).to_le_bytes());
+    out.extend_from_slice(&(h as i32).to_le_bytes());
     out.extend_from_slice(&rgb_u8);
 
     Ok(out)
