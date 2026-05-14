@@ -786,7 +786,11 @@ fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
         return (0.0, 0.0, l);
     }
     let d = max - min;
-    let s = if l > 0.5 { d / (2.0 - max - min) } else { d / (max + min) };
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
     let h = if max == r {
         ((g - b) / d + if g < b { 6.0 } else { 0.0 }) / 6.0
     } else if max == g {
@@ -799,20 +803,32 @@ fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
 
 fn hue_to_rgb(p: f32, q: f32, t: f32) -> f32 {
     let t = t.rem_euclid(1.0);
-    if t < 1.0/6.0 { return p + (q - p) * 6.0 * t; }
-    if t < 1.0/2.0 { return q; }
-    if t < 2.0/3.0 { return p + (q - p) * (2.0/3.0 - t) * 6.0; }
+    if t < 1.0 / 6.0 {
+        return p + (q - p) * 6.0 * t;
+    }
+    if t < 1.0 / 2.0 {
+        return q;
+    }
+    if t < 2.0 / 3.0 {
+        return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+    }
     p
 }
 
 fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
-    if s < 1e-6 { return (l, l, l); }
-    let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+    if s < 1e-6 {
+        return (l, l, l);
+    }
+    let q = if l < 0.5 {
+        l * (1.0 + s)
+    } else {
+        l + s - l * s
+    };
     let p = 2.0 * l - q;
     (
-        hue_to_rgb(p, q, h + 1.0/3.0),
+        hue_to_rgb(p, q, h + 1.0 / 3.0),
         hue_to_rgb(p, q, h),
-        hue_to_rgb(p, q, h - 1.0/3.0),
+        hue_to_rgb(p, q, h - 1.0 / 3.0),
     )
 }
 
@@ -843,7 +859,7 @@ impl SplitToningStage {
             }
 
             let (h, s, l) = rgb_to_hsl(r, g, b);
-            let h_new = (h + hue_shift * 0.5).rem_euclid(1.0);  // scale: ±1.0 maps to ±180°
+            let h_new = (h + hue_shift * 0.5).rem_euclid(1.0); // scale: ±1.0 maps to ±180°
             let (nr, ng, nb) = hsl_to_rgb(h_new, s, l);
 
             pixel[0] = (nr.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -1406,7 +1422,7 @@ pub fn create_output_image(
                 // Grain stronger in shadows, weaker in highlights.
                 // But cap absolute noise to avoid bright speckles in pure black.
                 let selwyn = (1.0 - lum).sqrt();
-                let strength = (base_strength * selwyn).min(0.15);  // cap prevents black speckle storms
+                let strength = (base_strength * selwyn).min(0.15); // cap prevents black speckle storms
                 px[0] = (px[0] + strength * nr).clamp(0.0, 1.0);
                 px[1] = (px[1] + strength * ng).clamp(0.0, 1.0);
                 px[2] = (px[2] + strength * nb).clamp(0.0, 1.0);
