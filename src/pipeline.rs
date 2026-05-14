@@ -778,6 +778,44 @@ fn sample_channel(src: &[f32], w: usize, h: usize, x: f32, y: f32, ch: usize) ->
         + src[i11] * fx * fy
 }
 
+fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) * 0.5;
+    if (max - min).abs() < 1e-6 {
+        return (0.0, 0.0, l);
+    }
+    let d = max - min;
+    let s = if l > 0.5 { d / (2.0 - max - min) } else { d / (max + min) };
+    let h = if max == r {
+        ((g - b) / d + if g < b { 6.0 } else { 0.0 }) / 6.0
+    } else if max == g {
+        ((b - r) / d + 2.0) / 6.0
+    } else {
+        ((r - g) / d + 4.0) / 6.0
+    };
+    (h, s, l)
+}
+
+fn hue_to_rgb(p: f32, q: f32, t: f32) -> f32 {
+    let t = t.rem_euclid(1.0);
+    if t < 1.0/6.0 { return p + (q - p) * 6.0 * t; }
+    if t < 1.0/2.0 { return q; }
+    if t < 2.0/3.0 { return p + (q - p) * (2.0/3.0 - t) * 6.0; }
+    p
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
+    if s < 1e-6 { return (l, l, l); }
+    let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+    let p = 2.0 * l - q;
+    (
+        hue_to_rgb(p, q, h + 1.0/3.0),
+        hue_to_rgb(p, q, h),
+        hue_to_rgb(p, q, h - 1.0/3.0),
+    )
+}
+
 /// # Split Toning Stage
 ///
 /// Applies a hue shift to highlights and shadows independently.
@@ -793,20 +831,24 @@ impl SplitToningStage {
             let r = pixel[0] as f32 / 255.0;
             let g = pixel[1] as f32 / 255.0;
             let b = pixel[2] as f32 / 255.0;
-            let luma = 0.299 * r + 0.587 * g + 0.114 * b;
+            // BT.709 luma
+            let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
 
-            // Highlight weight: ramps from 0 at luma=0.5 to 1 at luma=1.0
-            let w_hi = ((luma - 0.5) * 2.0).max(0.0);
-            // Shadow weight: ramps from 0 at luma=0.5 to 1 at luma=0.0
-            let w_sh = ((0.5 - luma) * 2.0).max(0.0);
+            let w_hi = ((luma - 0.5) * 2.0).clamp(0.0, 1.0);
+            let w_sh = ((0.5 - luma) * 2.0).clamp(0.0, 1.0);
+            let hue_shift = w_hi * config.highlight_hue_shift + w_sh * config.shadow_hue_shift;
 
-            let shift = w_hi * config.highlight_hue_shift + w_sh * config.shadow_hue_shift;
-            // Simple hue rotation approximation: shift red↑ and blue↓ (warm shift) or vice versa
-            let new_r = (r + shift * 0.5).clamp(0.0, 1.0);
-            let new_b = (b - shift * 0.5).clamp(0.0, 1.0);
+            if hue_shift.abs() < 0.001 {
+                continue;
+            }
 
-            pixel[0] = (new_r * 255.0) as u8;
-            pixel[2] = (new_b * 255.0) as u8;
+            let (h, s, l) = rgb_to_hsl(r, g, b);
+            let h_new = (h + hue_shift * 0.5).rem_euclid(1.0);  // scale: ±1.0 maps to ±180°
+            let (nr, ng, nb) = hsl_to_rgb(h_new, s, l);
+
+            pixel[0] = (nr.clamp(0.0, 1.0) * 255.0).round() as u8;
+            pixel[1] = (ng.clamp(0.0, 1.0) * 255.0).round() as u8;
+            pixel[2] = (nb.clamp(0.0, 1.0) * 255.0).round() as u8;
         }
     }
 }
@@ -1270,21 +1312,7 @@ pub fn create_output_image(
                 b_lin = lum + (b_lin - lum) * config.saturation;
             }
 
-            let v_str = film.vignette_strength * config.vignette_multiplier;
-            if v_str > 0.0 {
-                let px = i as u32 % width;
-                let py = i as u32 / width;
-                let dx = (px as f32 + 0.5) / width as f32 - 0.5;
-                let dy = (py as f32 + 0.5) / height as f32 - 0.5;
-                let r2 = dx * dx + dy * dy;
-                let f2 = 0.2;
-                let cos4 = 1.0 / (1.0 + r2 / f2).powi(2);
-                let factor = 1.0 - v_str * (1.0 - cos4);
-                r_lin *= factor;
-                g_lin *= factor;
-                b_lin *= factor;
-            }
-
+            // vignette applied pre-develop by VignettingStage in processor.rs
             out[0] = r_lin;
             out[1] = g_lin;
             out[2] = b_lin;
@@ -1378,7 +1406,7 @@ pub fn create_output_image(
                 // Grain stronger in shadows, weaker in highlights.
                 // But cap absolute noise to avoid bright speckles in pure black.
                 let selwyn = (1.0 - lum).sqrt();
-                let strength = base_strength * selwyn * lum.max(0.05);
+                let strength = (base_strength * selwyn).min(0.15);  // cap prevents black speckle storms
                 px[0] = (px[0] + strength * nr).clamp(0.0, 1.0);
                 px[1] = (px[1] + strength * ng).clamp(0.0, 1.0);
                 px[2] = (px[2] + strength * nb).clamp(0.0, 1.0);
