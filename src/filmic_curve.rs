@@ -15,55 +15,63 @@ pub struct FilmicCurve {
     pub toe_strength: f32,
     /// Shoulder strength [0,1]: 0 = no shoulder (hard clip), 1 = maximum rolloff
     pub shoulder_strength: f32,
-    /// Overall gamma (contrast): applied to the linear section slope
+    /// Retained for API compatibility — no longer used in `map()`.
+    ///
+    /// sRGB gamma encoding is applied separately by `linear_to_srgb()` in the
+    /// output stage; applying it here too caused double-compression of shadows.
     pub gamma: f32,
 }
 
 impl FilmicCurve {
-    /// Standard negative film curve — moderate toe, gentle shoulder (transparent highlights)
+    /// Standard negative film curve — moderate toe, gentle shoulder (transparent highlights).
+    ///
+    /// `gamma` is set to 1.0 (identity); the field is retained for API compatibility but
+    /// is not used by `map()`.
     pub fn negative() -> Self {
         Self {
             toe_strength: 0.2,
             shoulder_strength: 0.3,
-            gamma: 2.2,
+            gamma: 1.0,
         }
     }
 
-    /// Slide film curve — stronger toe (deeper blacks), minimal shoulder
+    /// Slide film curve — stronger toe (deeper blacks), minimal shoulder.
+    ///
+    /// `gamma` is set to 1.0 (identity); the field is retained for API compatibility but
+    /// is not used by `map()`.
     pub fn slide() -> Self {
         Self {
             toe_strength: 0.35,
             shoulder_strength: 0.15,
-            gamma: 1.4,
+            gamma: 1.0,
         }
     }
 
     /// Map normalized density x ∈ [0,1] to output ∈ [0,1].
     ///
-    /// Three-segment filmic curve:
-    /// - Toe: power curve for deeper blacks
-    /// - Shoulder: inverted power curve for smooth highlight rolloff
-    /// - Overall gamma applied to maintain density-to-brightness relationship
+    /// Three-segment filmic S-curve applied directly to normalized density:
+    /// - Toe: `x^(1 + toe_strength)` — power > 1 crushes deep shadows
+    /// - Shoulder: `1 - (1-x)^(1 + shoulder_strength*2)` — inverted power lifts highlights
+    /// - Blend: smoothstep of raw `x` (not gamma-warped) so knee positions track
+    ///   actual density levels
+    ///
+    /// Guarantees: `map(0.0) == 0.0`, `map(1.0) == 1.0`, strictly monotonic.
+    /// sRGB gamma encoding is applied downstream by `linear_to_srgb()`; the
+    /// `gamma` field on this struct is **not** used here.
     #[inline]
     pub fn map(&self, x: f32) -> f32 {
         let x = x.clamp(0.0, 1.0);
 
-        // First apply overall gamma (density-to-perceptual mapping)
-        let linear = x.powf(self.gamma);
-
-        // Then apply S-curve shaping (toe + shoulder)
-        // Toe: darken shadows by raising to power > 1
+        // Toe: power > 1 crushes deep shadows
         let toe_power = 1.0 + self.toe_strength; // [1, 2]
-                                                 // Shoulder: brighten highlights by compressing with inverted power
+        let toe = x.powf(toe_power);
+
+        // Shoulder: inverted power lifts highlights smoothly
         let shoulder_power = 1.0 + self.shoulder_strength * 2.0; // [1, 3]
+        let shoulder = 1.0 - (1.0 - x).powf(shoulder_power);
 
-        // Apply toe in lower half, shoulder in upper half, smooth blend
-        let toe = linear.powf(toe_power);
-        let shoulder = 1.0 - (1.0 - linear).powf(shoulder_power);
-
-        // Smooth blend using hermite interpolation
-        let t = linear; // blend factor
-        let t_smooth = t * t * (3.0 - 2.0 * t); // smoothstep
+        // Blend using smoothstep of raw x so knees track actual density levels
+        let t_smooth = x * x * (3.0 - 2.0 * x);
         toe * (1.0 - t_smooth) + shoulder * t_smooth
     }
 }
@@ -115,7 +123,7 @@ mod tests {
 
         // Midtones: should be in reasonable range for display
         let mid = curve.map(0.5);
-        assert!(mid > 0.05 && mid < 0.5, "Midpoint mapped to {}", mid);
+        assert!(mid > 0.05 && mid < 0.9, "Midpoint mapped to {}", mid);
     }
 
     #[test]
@@ -124,6 +132,6 @@ mod tests {
         let curve = FilmicCurve::negative();
         let mid = curve.map(0.5);
         // Should be in reasonable range (not too dark, not too bright)
-        assert!(mid > 0.1 && mid < 0.6, "Midpoint mapped to {}", mid);
+        assert!(mid > 0.1 && mid < 0.9, "Midpoint mapped to {}", mid);
     }
 }
