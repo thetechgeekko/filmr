@@ -6,76 +6,32 @@ use crate::ui::app::{AppMode, FilmrApp};
 use super::preset_io::create_custom_stock;
 #[cfg(not(target_arch = "wasm32"))]
 use super::preset_io::{export_preset, import_preset};
-use super::{labeled_slider, section_divider, section_header};
+use crate::ui::components::{
+    action_button, collapsing_section, labeled_slider, pill_selector, section_divider,
+    section_header,
+};
 
 /// Effects tab: Lens + Light Leaks + Halation + Preset Management.
 pub fn render_effects_tab(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut bool) {
     // Preset Management
     if app.mode == AppMode::Develop {
-        ui.collapsing("📦 Preset Management", |ui| {
+        collapsing_section(ui, "📦 Preset Management", false, |ui| {
             ui.horizontal(|ui| {
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("Import")
-                                .size(11.0)
-                                .color(egui::Color32::from_rgb(150, 150, 160)),
-                        )
-                        .fill(egui::Color32::from_rgb(42, 42, 48))
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(4.0),
-                    )
-                    .clicked()
-                {
+                if ui.add(action_button("Import")).clicked() {
                     #[cfg(not(target_arch = "wasm32"))]
                     import_preset(app, changed);
                 }
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("Export")
-                                .size(11.0)
-                                .color(egui::Color32::from_rgb(150, 150, 160)),
-                        )
-                        .fill(egui::Color32::from_rgb(42, 42, 48))
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(4.0),
-                    )
-                    .clicked()
-                {
+                if ui.add(action_button("Export")).clicked() {
                     #[cfg(not(target_arch = "wasm32"))]
                     export_preset(app);
                 }
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("✨ Create Custom")
-                                .size(11.0)
-                                .color(egui::Color32::from_rgb(150, 150, 160)),
-                        )
-                        .fill(egui::Color32::from_rgb(42, 42, 48))
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(4.0),
-                    )
-                    .clicked()
-                {
+                if ui.add(action_button("✨ Create Custom")).clicked() {
                     create_custom_stock(app, &ui.ctx().clone());
                     app.process_and_update_texture(&ui.ctx().clone());
                 }
             });
             if app.selected_stock_idx >= app.builtin_stock_count
-                && ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("📝 Edit in Studio")
-                                .size(11.0)
-                                .color(egui::Color32::from_rgb(150, 150, 160)),
-                        )
-                        .fill(egui::Color32::from_rgb(42, 42, 48))
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(4.0),
-                    )
-                    .clicked()
+                && ui.add(action_button("📝 Edit in Studio")).clicked()
             {
                 app.studio_stock = app.stocks[app.selected_stock_idx].as_ref().clone();
                 app.studio_stock_idx = Some(app.selected_stock_idx);
@@ -207,16 +163,7 @@ pub fn render_detail_tab(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut bo
         section_header(ui, "MOTION TRAJECTORY");
         ui.horizontal(|ui| {
             if ui
-                .add(
-                    egui::Button::new(
-                        egui::RichText::new("🎲")
-                            .size(11.0)
-                            .color(egui::Color32::from_rgb(150, 150, 160)),
-                    )
-                    .fill(egui::Color32::from_rgb(42, 42, 48))
-                    .stroke(egui::Stroke::NONE)
-                    .corner_radius(4.0),
-                )
+                .add(action_button("🎲"))
                 .on_hover_text("New trajectory")
                 .clicked()
             {
@@ -246,52 +193,15 @@ pub fn render_detail_tab(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut bo
 pub fn render_white_balance(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut bool) {
     section_header(ui, "WHITE BALANCE");
 
-    let accent = egui::Color32::from_rgb(230, 155, 50);
-    let bg_track = egui::Color32::from_rgb(36, 36, 40);
-    let text_dark = egui::Color32::from_rgb(24, 24, 28);
-    let text_secondary = egui::Color32::from_rgb(150, 150, 160);
-
     let pre_wb = app.white_balance_mode;
-    let modes = [
+    let options = [
         (WhiteBalanceMode::Auto, "Auto"),
         (WhiteBalanceMode::Gray, "Gray"),
         (WhiteBalanceMode::White, "White"),
         (WhiteBalanceMode::Off, "Off"),
     ];
-
-    // Pill
-    let pill_h = 22.0f32;
-    let pill_r = pill_h / 2.0;
-    let w = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, pill_h), egui::Sense::hover());
-    ui.painter().rect_filled(rect, pill_r, bg_track);
-    let seg_w = w / modes.len() as f32;
-
-    if let Some(sel_i) = modes.iter().position(|(m, _)| *m == app.white_balance_mode) {
-        let sr = egui::Rect::from_min_size(
-            egui::pos2(rect.left() + sel_i as f32 * seg_w, rect.top()),
-            egui::vec2(seg_w, pill_h),
-        );
-        ui.painter().rect_filled(sr, pill_r, accent);
-    }
-
-    for (i, (mode, label)) in modes.iter().enumerate() {
-        let is_sel = app.white_balance_mode == *mode;
-        let sr = egui::Rect::from_min_size(
-            egui::pos2(rect.left() + i as f32 * seg_w, rect.top()),
-            egui::vec2(seg_w, pill_h),
-        );
-        let resp = ui.interact(sr, ui.id().with(("wb", i)), egui::Sense::click());
-        ui.painter().text(
-            sr.center(),
-            egui::Align2::CENTER_CENTER,
-            *label,
-            egui::FontId::proportional(11.0),
-            if is_sel { text_dark } else { text_secondary },
-        );
-        if resp.clicked() {
-            app.white_balance_mode = *mode;
-        }
+    if pill_selector(ui, "wb_mode", &mut app.white_balance_mode, &options) {
+        *changed = true;
     }
 
     ui.add_space(4.0);
@@ -315,53 +225,11 @@ pub fn render_white_balance(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut
 /// Output mode section — pill style.
 pub fn render_output_mode(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut bool) {
     section_header(ui, "OUTPUT");
-
-    let accent = egui::Color32::from_rgb(230, 155, 50);
-    let bg_track = egui::Color32::from_rgb(36, 36, 40);
-    let text_dark = egui::Color32::from_rgb(24, 24, 28);
-    let text_secondary = egui::Color32::from_rgb(150, 150, 160);
-
-    let pre_om = app.output_mode;
-    let modes = [
+    let options = [
         (OutputMode::Positive, "Positive"),
         (OutputMode::Negative, "Negative"),
     ];
-
-    let pill_h = 22.0f32;
-    let pill_r = pill_h / 2.0;
-    let w = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, pill_h), egui::Sense::hover());
-    ui.painter().rect_filled(rect, pill_r, bg_track);
-    let seg_w = w / modes.len() as f32;
-
-    if let Some(sel_i) = modes.iter().position(|(m, _)| *m == app.output_mode) {
-        let sr = egui::Rect::from_min_size(
-            egui::pos2(rect.left() + sel_i as f32 * seg_w, rect.top()),
-            egui::vec2(seg_w, pill_h),
-        );
-        ui.painter().rect_filled(sr, pill_r, accent);
-    }
-
-    for (i, (mode, label)) in modes.iter().enumerate() {
-        let is_sel = app.output_mode == *mode;
-        let sr = egui::Rect::from_min_size(
-            egui::pos2(rect.left() + i as f32 * seg_w, rect.top()),
-            egui::vec2(seg_w, pill_h),
-        );
-        let resp = ui.interact(sr, ui.id().with(("output", i)), egui::Sense::click());
-        ui.painter().text(
-            sr.center(),
-            egui::Align2::CENTER_CENTER,
-            *label,
-            egui::FontId::proportional(11.0),
-            if is_sel { text_dark } else { text_secondary },
-        );
-        if resp.clicked() {
-            app.output_mode = *mode;
-        }
-    }
-
-    if pre_om != app.output_mode {
+    if pill_selector(ui, "output_mode", &mut app.output_mode, &options) {
         *changed = true;
     }
 }
@@ -377,35 +245,11 @@ fn render_light_leaks(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut bool)
     }
     if app.light_leak_config.enabled {
         ui.horizontal(|ui| {
-            if ui
-                .add(
-                    egui::Button::new(
-                        egui::RichText::new("Add")
-                            .size(11.0)
-                            .color(egui::Color32::from_rgb(150, 150, 160)),
-                    )
-                    .fill(egui::Color32::from_rgb(42, 42, 48))
-                    .stroke(egui::Stroke::NONE)
-                    .corner_radius(4.0),
-                )
-                .clicked()
-            {
+            if ui.add(action_button("Add")).clicked() {
                 app.light_leak_config.leaks.push(LightLeak::default());
                 *changed = true;
             }
-            if ui
-                .add(
-                    egui::Button::new(
-                        egui::RichText::new("Clear")
-                            .size(11.0)
-                            .color(egui::Color32::from_rgb(150, 150, 160)),
-                    )
-                    .fill(egui::Color32::from_rgb(42, 42, 48))
-                    .stroke(egui::Stroke::NONE)
-                    .corner_radius(4.0),
-                )
-                .clicked()
-            {
+            if ui.add(action_button("Clear")).clicked() {
                 app.light_leak_config.leaks.clear();
                 *changed = true;
             }
@@ -413,7 +257,7 @@ fn render_light_leaks(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut bool)
 
         let mut leaks_to_remove = Vec::new();
         for (i, leak) in app.light_leak_config.leaks.iter_mut().enumerate() {
-            ui.collapsing(format!("Leak #{}", i + 1), |ui| {
+            collapsing_section(ui, &format!("Leak #{}", i + 1), false, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Pos:");
                     if ui
@@ -494,19 +338,7 @@ fn render_light_leaks(app: &mut FilmrApp, ui: &mut egui::Ui, changed: &mut bool)
                         }
                     });
 
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("Remove")
-                                .size(11.0)
-                                .color(egui::Color32::from_rgb(150, 150, 160)),
-                        )
-                        .fill(egui::Color32::from_rgb(42, 42, 48))
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(4.0),
-                    )
-                    .clicked()
-                {
+                if ui.add(action_button("Remove")).clicked() {
                     leaks_to_remove.push(i);
                     *changed = true;
                 }
